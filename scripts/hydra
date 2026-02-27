@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+#
+# DEPRECATED: This bash script is deprecated.
+# Please use the TypeScript CLI instead.
+#
+# Migration guide:
+#   1. Install Node.js >= 20:  https://nodejs.org
+#   2. Install pnpm:           npm install -g pnpm
+#   3. Install dependencies:   pnpm install
+#   4. Build the CLI:          pnpm run build
+#   5. Run:                    ./bin/hydra <command>
+#
+# The TypeScript CLI supports all the same commands as this script and does
+# NOT require argc or cargo. See README.md for full documentation.
+#
 function ensure_permissions_on_files_and_directories() {
   chmod -R a+rwx $INFRA_PATH 2>/dev/null
   chmod -R a+rwx $SCRIPTS_PATH 2>/dev/null

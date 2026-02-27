@@ -1,4 +1,89 @@
 ## Welcome to Euclid Development Environment
+
+---
+
+## TypeScript CLI (New — Recommended)
+
+The `hydra` CLI has been rewritten in TypeScript. The TypeScript CLI is the recommended way to use Euclid going forward. The legacy bash scripts are deprecated (see below).
+
+### Requirements
+
+- **Node.js ≥ 20** — [nodejs.org](https://nodejs.org)
+- **pnpm ≥ 9** — `npm install -g pnpm`
+- Docker ≥ 26.0.0, Ansible ≥ 2.16, jq, yq (same runtime dependencies as before)
+
+> **Note:** `cargo install argc` is **NO LONGER REQUIRED**. The new TypeScript CLI replaces the `argc`-based bash CLI entirely.
+
+### Setup
+
+```bash
+# 1. Install Node.js dependencies
+pnpm install
+
+# 2. Compile the TypeScript source
+pnpm run build
+
+# 3. Run the CLI
+./bin/hydra --help
+
+# Or run directly without compiling (development mode):
+pnpm dev -- --help
+```
+
+### Usage
+
+All commands from the original bash CLI are available:
+
+```bash
+./bin/hydra local build
+./bin/hydra local start-genesis
+./bin/hydra local start-rollback
+./bin/hydra local stop
+./bin/hydra local destroy
+./bin/hydra local purge
+./bin/hydra local status
+./bin/hydra local logs <container> <layer>
+./bin/hydra local install
+./bin/hydra local install-template --list
+./bin/hydra remote deploy
+./bin/hydra remote start
+./bin/hydra remote status
+```
+
+Backward-compatible top-level aliases still work:
+
+```bash
+./bin/hydra build           # same as: ./bin/hydra local build
+./bin/hydra start-genesis   # same as: ./bin/hydra local start-genesis
+./bin/hydra remote-deploy   # same as: ./bin/hydra remote deploy
+```
+
+### Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `Error: Cannot find module '../dist/index.js'` | Run `pnpm run build` first |
+| `pnpm: command not found` | Run `npm install -g pnpm` |
+| `Could not find euclid.json` | Run hydra from the project root (where `euclid.json` lives) |
+| `Docker version X.Y.Z detected. Minimum required: 26.0.0` | Upgrade Docker to ≥ 26.0.0 |
+| `ansible-playbook: command not found` | Install Ansible: `pip install ansible` (≥ 2.16) |
+| `yq` check fails | Install Mike Farah's yq from [github.com/mikefarah/yq](https://github.com/mikefarah/yq) |
+| TypeScript build errors | Run `pnpm typecheck` to see all errors |
+| ESLint errors | Run `pnpm lint:fix` for auto-fixable issues |
+
+---
+
+# Legacy Bash CLI (Deprecated)
+
+> **Deprecation Notice:** The bash scripts in `scripts/hydra` are deprecated and will be removed in a future release. Please migrate to the TypeScript CLI above.
+>
+> To use the TypeScript CLI instead:
+> ```bash
+> pnpm install && pnpm run build && ./bin/hydra
+> ```
+
+---
+
 # Dependencies
 ## Docker
 * You should have Docker installed
@@ -164,6 +249,8 @@ We have the option `update` to update the Euclid. You can call the option this w
 **NOTE: FOR ALL OPTIONS ABOVE YOU CAN USE `-h` TO CHECK THE AVAILABLE PARAMETERS** 
 
 ## Let's build
+
+> **Deprecated:** The bash-based workflow below requires `argc` and Rust's `cargo`. This approach is deprecated. Use the [TypeScript CLI](#typescript-cli-new--recommended) instead — no `argc` or `cargo` required.
 
 After understanding the folder structure, we can start build our containers.
 

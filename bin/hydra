@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+/**
+ * Hydra CLI — compiled entry point.
+ *
+ * This file is the shebang wrapper that Node.js executes when `hydra` is run.
+ * It imports the compiled dist/index.js, which delegates to oclif's dispatcher.
+ *
+ * For development (without compiling first), use:
+ *   pnpm dev -- <command> [args]
+ *
+ * To compile:
+ *   pnpm build
+ *
+ * Then link globally:
+ *   pnpm link --global
+ */
+
+import('../dist/index.js')

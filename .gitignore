@@ -15,3 +15,5 @@ infra/shared/genesis/*
 !source/p12-files/token-key-2.p12
 !source/p12-files/token-key-3.p12
 .metals/
+dist/
+node_modules/

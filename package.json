@@ -1,0 +1,62 @@
+{
+  "name": "@constellation-labs/hydra",
+  "version": "0.1.0",
+  "description": "Euclid Development Environment CLI — TypeScript rewrite of the hydra bash CLI",
+  "type": "module",
+  "exports": "./dist/index.js",
+  "bin": {
+    "hydra": "./bin/hydra"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
+  },
+  "oclif": {
+    "bin": "hydra",
+    "dirname": "hydra",
+    "commands": "./dist/commands",
+    "plugins": [
+      "@oclif/plugin-help"
+    ],
+    "topics": {
+      "local": {
+        "description": "Manage local Docker-based development environment"
+      },
+      "remote": {
+        "description": "Manage remote cloud-based metagraph deployment via Ansible"
+      }
+    }
+  },
+  "dependencies": {
+    "@oclif/core": "^4",
+    "@oclif/plugin-help": "^6",
+    "chalk": "^5",
+    "execa": "^9",
+    "inquirer": "^9",
+    "js-yaml": "^4",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4",
+    "@types/node": "^22",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
+    "prettier": "^3",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
