@@ -3,36 +3,20 @@
  *
  * Bash equivalent: install-monitoring-service() / install_monitoring_service() alias
  *                  → install_monitoring_service() in scripts/hydra-operations/install-monitoring-service.sh
- *
- * Operations:
- *   1. Check that infra/shared/genesis/genesis.address exists (genesis must have run)
- *   2. Read metagraph_id from infra/shared/genesis/genesis.address
- *   3. Clone metagraph-monitoring-service into source/metagraph-monitoring-service/
- *   4. Update metagraph-monitoring-service/package.json: name = "<project>-monitoring"
- *   5. Update metagraph-monitoring-service/config/config.json with:
- *      - .metagraph.name = project_name
- *      - .metagraph.id = metagraph_id
- *      - .metagraph.version = "1.0.0"
- *      - .metagraph.nodes[0..2].key_file.name/alias/password from euclid.json nodes
- *   6. Remove .git directory from cloned repo
- *
- * After this command, edit metagraph-monitoring-service/config/config.json
- * to fill in node IPs, usernames, private key paths, and network details.
- * Then run: hydra remote deploy-monitoring-service
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
 import { execa } from 'execa';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, success, info } from '../../utils/logger.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger } from '../../utils/logger.js';
 
 const MONITORING_REPO = 'https://github.com/Constellation-Labs/metagraph-monitoring-service';
 const MONITORING_SERVICE_VERSION = '1.0.0';
 
 /**
  * Update a JSON field if the value is non-empty.
- * Matches update_json_if_not_empty() in install-monitoring-service.sh.
  */
 function updateJsonField(
   obj: Record<string, unknown>,
@@ -101,16 +85,16 @@ export default class InstallMonitoringService extends Command {
   ];
 
   async run(): Promise<void> {
-    header('INSTALL REMOTE MONITORING SERVICE');
+    logger.section('INSTALL REMOTE MONITORING SERVICE');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote install-monitoring-service\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
@@ -118,76 +102,78 @@ export default class InstallMonitoringService extends Command {
     // Check genesis files exist (matches check_if_genesis_files_exists())
     const genesisAddressFile = path.join(infraPath, 'shared', 'genesis', 'genesis.address');
     if (!fs.existsSync(genesisAddressFile)) {
-      this.error(
-        `Genesis address file not found: ${genesisAddressFile}\n` +
-          'Please run "hydra create-remote-genesis" or "hydra start-genesis" first.'
+      logger.error(
+        `✖  Command failed: remote install-monitoring-service\n   Reason: Genesis address file not found at ${genesisAddressFile}\n   Fix:    Run "hydra create-remote-genesis" or "hydra start-genesis" first`
       );
     }
 
     const metagraphId = fs.readFileSync(genesisAddressFile, 'utf-8').trim();
     if (!metagraphId) {
-      this.error('Genesis address file is empty. Please run genesis first.');
+      logger.error(
+        '✖  Command failed: remote install-monitoring-service\n   Reason: Genesis address file is empty\n   Fix:    Run genesis first to generate the metagraph ID'
+      );
     }
 
-    const projectName = config.project_name;
+    const projectName = config.projectName;
     const nodes = config.nodes;
 
     // Clone monitoring service repo
     const targetDir = path.join(sourcePath, 'metagraph-monitoring-service');
     if (fs.existsSync(targetDir)) {
-      this.error(
-        `Directory already exists: ${targetDir}\n` +
-          'Remove it first if you want to re-install.'
+      logger.error(
+        `✖  Command failed: remote install-monitoring-service\n   Reason: Directory already exists: ${targetDir}\n   Fix:    Remove it first if you want to re-install`
       );
     }
 
-    info(`Downloading the metagraph-monitoring-service under directory ${sourcePath}/metagraph-monitoring-service`);
-    this.log('');
-
-    await execa('git', ['clone', '--quiet', MONITORING_REPO], {
-      cwd: sourcePath,
-      stdio: 'inherit',
-    });
-
-    success('metagraph-monitoring-service downloaded');
+    const cloneSpinner = logger.spin(
+      `Downloading metagraph-monitoring-service to ${sourcePath}/metagraph-monitoring-service...`
+    );
+    try {
+      await execa('git', ['clone', '--quiet', MONITORING_REPO], {
+        cwd: sourcePath,
+        stdio: 'inherit',
+      });
+      cloneSpinner.succeed('metagraph-monitoring-service downloaded');
+    } catch (err) {
+      cloneSpinner.fail('Failed to download monitoring service');
+      logger.error(
+        `✖  Command failed: remote install-monitoring-service\n   Reason: git clone failed — ${(err as Error).message}\n   Fix:    Check network connectivity`
+      );
+    }
 
     // Update package.json name field
-    info(`Updating project name in metagraph-monitoring-service/package.json`);
+    logger.step(`Updating project name in package.json`);
     const packageJsonPath = path.join(targetDir, 'package.json');
     const packageJson = JSON.parse(
       fs.readFileSync(packageJsonPath, 'utf-8')
     ) as Record<string, unknown>;
     packageJson['name'] = `${projectName}-monitoring`;
     fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
-    success('Updated');
+    logger.success('package.json updated');
 
     // Update config.json fields
-    info('Updating the config.json');
+    logger.step('Updating config.json');
     const configJsonPath = path.join(targetDir, 'config', 'config.json');
     const configJson = JSON.parse(
       fs.readFileSync(configJsonPath, 'utf-8')
     ) as Record<string, unknown>;
 
-    // Matches the update_json_if_not_empty calls in install-monitoring-service.sh
     updateJsonField(configJson, '.metagraph.name', projectName);
     updateJsonField(configJson, '.metagraph.id', metagraphId);
     updateJsonField(configJson, '.metagraph.version', MONITORING_SERVICE_VERSION);
 
-    // Node 0 (genesis node)
     if (nodes[0]) {
       updateJsonField(configJson, '.metagraph.nodes[0].key_file.name', nodes[0].key_file.name);
       updateJsonField(configJson, '.metagraph.nodes[0].key_file.alias', nodes[0].key_file.alias);
       updateJsonField(configJson, '.metagraph.nodes[0].key_file.password', nodes[0].key_file.password);
     }
 
-    // Node 1
     if (nodes[1]) {
       updateJsonField(configJson, '.metagraph.nodes[1].key_file.name', nodes[1].key_file.name);
       updateJsonField(configJson, '.metagraph.nodes[1].key_file.alias', nodes[1].key_file.alias);
       updateJsonField(configJson, '.metagraph.nodes[1].key_file.password', nodes[1].key_file.password);
     }
 
-    // Node 2
     if (nodes[2]) {
       updateJsonField(configJson, '.metagraph.nodes[2].key_file.name', nodes[2].key_file.name);
       updateJsonField(configJson, '.metagraph.nodes[2].key_file.alias', nodes[2].key_file.alias);
@@ -195,24 +181,22 @@ export default class InstallMonitoringService extends Command {
     }
 
     fs.writeFileSync(configJsonPath, JSON.stringify(configJson, null, 2));
-    success('config.json updated');
+    logger.success('config.json updated');
 
-    // Remove .git directory (matches bash: chmod -R +w ... && rm -r ...)
+    // Remove .git directory
     const gitDir = path.join(targetDir, '.git');
     if (fs.existsSync(gitDir)) {
       fs.chmodSync(gitDir, 0o755);
       fs.rmSync(gitDir, { recursive: true, force: true });
     }
 
-    this.log('');
-    success('Monitoring service installed successfully.');
-    info(
-      `Next steps:\n` +
-        `  1. Edit ${targetDir}/config/config.json to fill in:\n` +
-        `     - .metagraph.nodes[*].ip, .username, .privateKeyPath\n` +
-        `     - .network.name and .network.nodes[*] (GL0 peer info)\n` +
-        `  2. Run: hydra remote deploy-monitoring-service\n` +
-        `  3. Run: hydra remote start-monitoring-service`
-    );
+    logger.success('Monitoring service installed successfully.');
+    logger.panel('Next Steps', [
+      `1. Edit ${targetDir}/config/config.json to fill in:`,
+      `   - .metagraph.nodes[*].ip, .username, .privateKeyPath`,
+      `   - .network.name and .network.nodes[*] (GL0 peer info)`,
+      `2. Run: hydra remote deploy-monitoring-service`,
+      `3. Run: hydra remote start-monitoring-service`,
+    ]);
   }
 }

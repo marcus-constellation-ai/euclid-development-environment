@@ -23,15 +23,16 @@
  */
 import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, REMOTE_DEPS } from '../../utils/dependencies.js';
-import { header, info, success } from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 import {
   runPlaybook,
   checkNodesHostFile,
   getSecondSignerInfo,
 } from '../../utils/ansible.js';
-import { confirmDestructive } from '../../utils/prompt.js';
+import { confirmForceGenesis } from '../../utils/prompt.js';
 
 export default class Deploy extends Command {
   static override id = 'remote:deploy';
@@ -64,17 +65,17 @@ export default class Deploy extends Command {
   async run(): Promise<void> {
     const { flags } = await this.parse(Deploy);
 
-    header('REMOTE DEPLOY');
+    logger.section('REMOTE DEPLOY');
 
     // Load config and derive paths
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote deploy\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     // Check required tools (ansible-playbook, ssh, scp, curl, jq, yq)
     requireDependencies(REMOTE_DEPS);
@@ -83,23 +84,14 @@ export default class Deploy extends Command {
     const ownerFile = config.snapshot_fees.owner.key_file.name;
     const stakingFile = config.snapshot_fees.staking.key_file.name;
     if (ownerFile === stakingFile) {
-      this.error(
-        'Owner and staking p12 files must be different. ' +
-          `Both are currently set to "${ownerFile}". ` +
-          'Update snapshot_fees in euclid.json.'
+      logger.error(
+        `✖  Command failed: remote deploy\n   Reason: Owner and staking p12 files must be different. Both are currently "${ownerFile}"\n   Fix:    Update snapshot_fees in euclid.json`
       );
     }
 
     // Confirm force-genesis (matches confirm_force_genesis() in validations.sh)
     if (flags['force-genesis']) {
-      const confirmed = await confirmDestructive(
-        'WARNING: --force-genesis will wipe all remote node state and data. ' +
-          'All existing snapshots will be lost. Are you sure you want to proceed?'
-      );
-      if (!confirmed) {
-        this.log('Aborted.');
-        return;
-      }
+      if (!(await confirmForceGenesis())) return;
     }
 
     // Resolve paths
@@ -111,8 +103,7 @@ export default class Deploy extends Command {
     // Validate remote hosts (IPs, SSH keys in agent)
     await checkNodesHostFile(hostsFile);
 
-    info('Deploying on remote hosts');
-    this.log('');
+    logger.step('Deploying on remote hosts...');
 
     // Determine layer deployment flags (matches remote-deploy.sh logic)
     const layers = config.layers;
@@ -141,8 +132,17 @@ export default class Deploy extends Command {
       INFRA_PATH: infraPath,
     };
 
-    await runPlaybook(deployPlaybook, extraVars, hostsFile, ansibleEnv);
+    const spinner = logger.spin('Running Ansible deploy playbook...');
+    try {
+      await runPlaybook(deployPlaybook, extraVars, hostsFile, ansibleEnv);
+      spinner.succeed('Remote deploy completed');
+    } catch (err) {
+      spinner.fail('Remote deploy failed');
+      logger.error(
+        `✖  Command failed: remote deploy\n   Reason: Ansible playbook failed — ${(err as Error).message}\n   Fix:    Check Ansible output above and verify SSH keys are loaded`
+      );
+    }
 
-    success('Remote deploy completed successfully.');
+    logger.success('Remote deploy completed successfully.');
   }
 }

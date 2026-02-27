@@ -3,18 +3,13 @@
  *
  * Bash equivalent: remote-snapshot-fee-config() in scripts/hydra
  *                  → remote_snapshot_fee_config() in scripts/hydra-operations/remote-snapshot-fee-config.sh
- *
- * Operation:
- *   1. SSH to node-1 → read metagraph_id from code/metagraph-l0/genesis.address
- *   2. HTTP GET http://{gl0_node_ip}:{gl0_node_port}/global-snapshots/latest/combined
- *   3. Extract .[1].lastCurrencySnapshots."<metagraphId>".Right[1].lastMessages
- *   4. Display Owner and Staking addresses + parent ordinals
  */
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
 import { execa } from 'execa';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, success, info, detail, urlLine } from '../../utils/logger.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger, urlLine } from '../../utils/logger.js';
 import { parseHosts, checkNodesHostFile } from '../../utils/ansible.js';
 
 /** Shape of lastMessages in the global snapshot response */
@@ -59,17 +54,16 @@ export default class SnapshotFeeConfig extends Command {
   ];
 
   async run(): Promise<void> {
-    header('REMOTE SNAPSHOT FEE CONFIG');
-    this.log('');
+    logger.section('REMOTE SNAPSHOT FEE CONFIG');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote snapshot-fee-config\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const hostsFile = path.resolve(rootPath, config.deploy.ansible.hosts);
     await checkNodesHostFile(hostsFile);
@@ -77,7 +71,9 @@ export default class SnapshotFeeConfig extends Command {
     const hosts = await parseHosts(hostsFile);
     const node1 = hosts.nodes.hosts['node-1'];
     if (!node1) {
-      this.error('No node-1 found in Ansible hosts file.');
+      logger.error(
+        '✖  Command failed: remote snapshot-fee-config\n   Reason: No node-1 found in Ansible hosts file\n   Fix:    Check infra/ansible/remote/hosts.ansible.yml'
+      );
     }
 
     const host = String(node1.ansible_host);
@@ -85,11 +81,11 @@ export default class SnapshotFeeConfig extends Command {
     const privateKey = String(node1.ansible_ssh_private_key_file);
 
     // SSH to node-1 to read genesis.address (metagraph_id)
-    // Matches: ssh -i "$private_key" $user@$host "cd code/metagraph-l0; cat genesis.address"
-    header(`Fetching the metagraph-id in node ${host}`);
-    info('SSH to the node...');
+    logger.section(`Fetching metagraph-id from node ${host}`);
+    logger.step('SSH to the node...');
 
     let metagraphId: string;
+    const sshSpinner = logger.spin('Fetching metagraph ID via SSH...');
     try {
       const sshResult = await execa(
         'ssh',
@@ -97,67 +93,70 @@ export default class SnapshotFeeConfig extends Command {
         { reject: true }
       );
       metagraphId = sshResult.stdout.trim();
+      sshSpinner.succeed(`Metagraph ID: ${metagraphId}`);
     } catch (err) {
-      this.error(
-        `SSH command failed. Please check the connection and try again.\n${(err as Error).message}`
+      sshSpinner.fail('SSH command failed');
+      logger.error(
+        `✖  Command failed: remote snapshot-fee-config\n   Reason: SSH failed to ${host} — ${(err as Error).message}\n   Fix:    Check the connection and ensure the private key is loaded`
       );
     }
 
-    if (!metagraphId) {
-      this.error('Metagraph ID is empty. Has genesis been run on the remote nodes?');
+    if (!metagraphId!) {
+      logger.error(
+        '✖  Command failed: remote snapshot-fee-config\n   Reason: Metagraph ID is empty\n   Fix:    Ensure genesis has been run on the remote nodes'
+      );
     }
 
-    success(`Metagraph ID: ${metagraphId}`);
-    this.log('');
-
     // Fetch latest global snapshot
-    const gl0Ip = String(config.deploy.network.gl0_node.ip);
-    const gl0Port = String(config.deploy.network.gl0_node.public_port);
+    const gl0Ip = String(config.deploy.gl0Node.ip);
+    const gl0Port = String(config.deploy.gl0Node.publicPort);
     const url = `http://${gl0Ip}:${gl0Port}/global-snapshots/latest/combined`;
 
-    header(`Fetching latest global snapshot from ${url}`);
+    logger.section(`Fetching latest global snapshot from ${url}`);
 
+    const fetchSpinner = logger.spin('Fetching global snapshot...');
     let responseData: GlobalSnapshotResponse;
-    let httpStatus: number;
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(15000),
         headers: { 'Content-Type': 'application/json' },
       });
-      httpStatus = response.status;
       if (!response.ok) {
-        this.error(`Failed to fetch data. HTTP Status Code: ${httpStatus}`);
+        fetchSpinner.fail(`HTTP ${response.status}`);
+        logger.error(
+          `✖  Command failed: remote snapshot-fee-config\n   Reason: HTTP ${response.status} from ${url}\n   Fix:    Check the GL0 node is running and accessible`
+        );
       }
       responseData = (await response.json()) as GlobalSnapshotResponse;
+      fetchSpinner.succeed('Global snapshot fetched');
     } catch (err) {
-      this.error(`Failed to fetch global snapshot: ${(err as Error).message}`);
-    }
-
-    // Extract lastMessages for the metagraph
-    // Matches: .[1].lastCurrencySnapshots."<metagraphId>".Right[1].lastMessages
-    const snapshotEntry = responseData[1]?.lastCurrencySnapshots?.[metagraphId];
-    const lastMessages = snapshotEntry?.Right?.[1]?.lastMessages;
-
-    if (!lastMessages) {
-      this.error(
-        'Failed when extracting the fee configuration from global snapshot. ' +
-          'Be sure your metagraph has the fees messages configured.'
+      fetchSpinner.fail('Failed to fetch global snapshot');
+      logger.error(
+        `✖  Command failed: remote snapshot-fee-config\n   Reason: ${(err as Error).message}\n   Fix:    Check GL0 node IP and port in euclid.json`
       );
     }
 
-    success('Last messages extracted successfully:');
+    // Extract lastMessages for the metagraph
+    const snapshotEntry = responseData![1]?.lastCurrencySnapshots?.[metagraphId!];
+    const lastMessages = snapshotEntry?.Right?.[1]?.lastMessages;
 
-    // Extract and display Owner info
-    const ownerAddress = lastMessages.Owner?.value?.address ?? 'N/A';
-    const ownerParentOrdinal = lastMessages.Owner?.value?.parentOrdinal ?? 'N/A';
-    const stakingAddress = lastMessages.Staking?.value?.address ?? 'N/A';
-    const stakingParentOrdinal = lastMessages.Staking?.value?.parentOrdinal ?? 'N/A';
+    if (!lastMessages) {
+      logger.error(
+        '✖  Command failed: remote snapshot-fee-config\n   Reason: Could not extract fee configuration from global snapshot\n   Fix:    Ensure your metagraph has fee messages configured'
+      );
+    }
 
-    detail('OWNER');
+    logger.success('Last messages extracted successfully:');
+
+    const ownerAddress = lastMessages!.Owner?.value?.address ?? 'N/A';
+    const ownerParentOrdinal = lastMessages!.Owner?.value?.parentOrdinal ?? 'N/A';
+    const stakingAddress = lastMessages!.Staking?.value?.address ?? 'N/A';
+    const stakingParentOrdinal = lastMessages!.Staking?.value?.parentOrdinal ?? 'N/A';
+
+    logger.info('OWNER');
     urlLine('Owner Address', ownerAddress);
     urlLine('Owner Parent Ordinal', ownerParentOrdinal);
-    this.log('');
-    detail('STAKING');
+    logger.info('STAKING');
     urlLine('Staking Address', stakingAddress);
     urlLine('Staking Parent Ordinal', stakingParentOrdinal);
   }

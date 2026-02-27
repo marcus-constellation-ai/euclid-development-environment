@@ -15,11 +15,13 @@ import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
 import { execa } from 'execa';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
+import { formatElapsed } from '../../utils/time.js';
 import {
-  dockerCompose,
+  detectDockerCompose,
   runDocker,
   runDockerCapture,
   getTessellationVersionName,
@@ -28,6 +30,16 @@ import {
   checkP12Files,
   projectDirectoryExists,
 } from '../../utils/docker.js';
+
+/** Return last N non-empty lines from a captured output string */
+function lastLines(output: string, n: number): string {
+  return output
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0)
+    .slice(-n)
+    .join('\n');
+}
 
 export default class Build extends Command {
   static override id = 'local:build'
@@ -67,10 +79,12 @@ export default class Build extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error(
+        'Could not find euclid.json. Run from inside an Euclid project directory.'
+      );
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -82,11 +96,11 @@ export default class Build extends Command {
     // ----------------------------------------------------------------
     // 3. Pre-build validations (matches build_containers() in bash)
     // ----------------------------------------------------------------
-    logger.buildBanner();
+    logger.section('BUILD');
 
     // Tessellation version must not start with 'v'
     if (config.tessellation_version.startsWith('v')) {
-      this.error(
+      logger.error(
         `tessellation_version "${config.tessellation_version}" must not start with "v". ` +
           'Remove the "v" prefix from tessellation_version in euclid.json.'
       );
@@ -95,28 +109,28 @@ export default class Build extends Command {
     // All node p12 files must exist
     const missingP12 = checkP12Files(sourcePath, config.nodes);
     if (missingP12.length > 0) {
-      this.error(
+      logger.error(
         `Missing p12 files in source/p12-files/:\n  ${missingP12.join('\n  ')}\n` +
           'Copy the required p12 files before building.'
       );
     }
 
-    // project_name must be set
-    if (!config.project_name) {
-      this.error('project_name is not set in euclid.json.');
+    // projectName must be set
+    if (!config.projectName) {
+      logger.error('projectName is not set in euclid.json.');
     }
 
-    // source/project/<project_name> must exist
-    if (!projectDirectoryExists(sourcePath, config.project_name)) {
-      this.error(
-        `Project directory source/project/${config.project_name} does not exist. ` +
+    // source/project/<projectName> must exist
+    if (!projectDirectoryExists(sourcePath, config.projectName)) {
+      logger.error(
+        `Project directory source/project/${config.projectName} does not exist. ` +
           'Run `hydra local install-template` first or create the project directory.'
       );
     }
 
     // At least 3 nodes required
     if (config.nodes.length < 3) {
-      this.error(
+      logger.error(
         `At least 3 nodes are required in euclid.json. Found: ${config.nodes.length}`
       );
     }
@@ -130,8 +144,11 @@ export default class Build extends Command {
     const tessVersionSemver = getTessellationVersionSemver(tessVersion, refType);
     const checkoutVersion = getCheckoutTessellationVersion(tessVersion);
 
+    // Determine total steps: ubuntu (1) + base-image (2) + copy JARs (3) + optional run (4)
+    const totalSteps = flags.run ? 4 : 3;
+
     // ----------------------------------------------------------------
-    // 5. Build metagraph-ubuntu image (skip if already built)
+    // 5. Step 1 — Build metagraph-ubuntu image (skip if already built)
     // ----------------------------------------------------------------
     await this.buildMetagraphUbuntu({
       infraPath,
@@ -141,24 +158,28 @@ export default class Build extends Command {
       checkoutVersion,
       refType,
       noCache: flags.no_cache,
+      stepNum: 1,
+      totalSteps,
     });
 
     // ----------------------------------------------------------------
-    // 6. Build metagraph-base-image (compile Scala project)
+    // 6. Step 2/3 — Build metagraph-base-image + copy JARs
     // ----------------------------------------------------------------
     await this.buildMetagraphBaseImage({
       infraPath,
       tessVersionName,
-      projectName: config.project_name,
+      projectName: config.projectName,
       layers: config.layers,
       noCache: flags.no_cache,
+      stepNum: 2,
+      totalSteps,
     });
 
     // ----------------------------------------------------------------
-    // 7. Optionally start containers (--run flag)
+    // 7. Step 4 (optional) — start containers (--run flag)
     // ----------------------------------------------------------------
     if (flags.run) {
-      logger.info('Starting containers after build...');
+      logger.step(`Step 4/${totalSteps}  Starting containers...`);
       const { default: StartGenesis } = await import('./start-genesis.js');
       await StartGenesis.run([], this.config);
     }
@@ -176,21 +197,22 @@ export default class Build extends Command {
     checkoutVersion: string;
     refType: 'tag' | 'branch';
     noCache: boolean;
+    stepNum: number;
+    totalSteps: number;
   }): Promise<void> {
     const imageName = `metagraph-ubuntu-${opts.tessVersionName}`;
+    const stepLabel = `Step ${opts.stepNum}/${opts.totalSteps}`;
 
     // Skip build if image already exists (matches bash check)
     const existing = await runDockerCapture(['images', '-q', imageName]);
     if (existing) {
-      logger.success(`Ubuntu for tessellation ${opts.tessVersion} already built, skipping...`);
+      logger.success(`${stepLabel}  metagraph-ubuntu already built, skipping...`);
       return;
     }
 
-    logger.detail('');
-    logger.detail('');
-    logger.detail(
-      `Building metagraph ubuntu for tessellation ${opts.tessVersion} in image name ${imageName}`
-    );
+    logger.step(`${stepLabel}  Building metagraph-ubuntu base image...`);
+    const spinner = logger.spin(`Building metagraph-ubuntu for tessellation ${opts.tessVersion}...`);
+    const stepStart = Date.now();
 
     const ubuntuDir = path.join(opts.infraPath, 'metagraph-ubuntu');
     const buildArgs = [
@@ -202,9 +224,49 @@ export default class Build extends Command {
 
     if (opts.noCache) buildArgs.push('--no-cache');
 
-    await dockerCompose(['build', ...buildArgs], ubuntuDir);
+    const composeCmd = await detectDockerCompose();
+    const mergedEnv = { ...process.env };
 
-    logger.success(`Ubuntu for tessellation ${opts.tessVersion} built`);
+    let capturedOutput = '';
+    try {
+      const result = composeCmd === 'docker compose'
+        ? await execa('docker', ['compose', 'build', ...buildArgs], {
+            cwd: ubuntuDir, env: mergedEnv, reject: false, all: true,
+          })
+        : await execa('docker-compose', ['build', ...buildArgs], {
+            cwd: ubuntuDir, env: mergedEnv, reject: false, all: true,
+          });
+
+      capturedOutput = result.all ?? (result.stdout + '\n' + result.stderr);
+
+      if (result.exitCode !== 0) {
+        spinner.fail(`${stepLabel}  metagraph-ubuntu build failed`);
+        const tail = lastLines(capturedOutput, 10);
+        if (tail) {
+          logger.section('Last 10 lines of Docker output');
+          process.stderr.write(tail + '\n');
+        }
+        logger.error(
+          `${stepLabel} failed: Docker image build failed for metagraph-ubuntu-${opts.tessVersionName}\n` +
+            `   Check Docker daemon is running and re-run with --no_cache`
+        );
+      }
+
+      const elapsed = formatElapsed(Date.now() - stepStart);
+      spinner.succeed(`${stepLabel}  metagraph-ubuntu ready   ${elapsed}`);
+    } catch (err) {
+      spinner.fail(`${stepLabel}  metagraph-ubuntu build failed`);
+      const tail = lastLines(capturedOutput, 10);
+      if (tail) {
+        logger.section('Last 10 lines of Docker output');
+        process.stderr.write(tail + '\n');
+      }
+      logger.error(
+        `${stepLabel} failed: Docker image build failed for metagraph-ubuntu-${opts.tessVersionName}\n` +
+          `   Error: ${(err as Error).message}\n` +
+          `   Check Docker daemon is running and re-run with --no_cache`
+      );
+    }
   }
 
   // ------------------------------------------------------------------
@@ -217,12 +279,11 @@ export default class Build extends Command {
     projectName: string;
     layers: string[];
     noCache: boolean;
+    stepNum: number;
+    totalSteps: number;
   }): Promise<void> {
-    logger.detail('');
-    logger.detail('');
-    logger.detail('Building metagraph base image...');
-
     const baseImageDir = path.join(opts.infraPath, 'metagraph-base-image');
+    const stepLabel = `Step ${opts.stepNum}/${opts.totalSteps}`;
 
     // Check for custom Dockerfile override
     const customDockerfile = path.join(
@@ -258,28 +319,70 @@ export default class Build extends Command {
 
     if (opts.noCache) buildArgs.push('--no-cache');
 
+    logger.step(`${stepLabel}  Building metagraph-base-image...`);
+    const spinner = logger.spin('Building metagraph base image...');
+    const stepStart = Date.now();
+
+    const composeCmd = await detectDockerCompose();
+    const mergedEnv = { ...process.env, METAGRAPH_BASE_IMAGE_DOCKERFILE: dockerfilePath };
+
+    let capturedOutput = '';
     try {
-      await dockerCompose(['build', ...buildArgs], baseImageDir, {
-        METAGRAPH_BASE_IMAGE_DOCKERFILE: dockerfilePath,
-      });
-    } catch {
-      this.error(
-        'Error building Metagraph base image. Check the Docker build output for details.'
+      const result = composeCmd === 'docker compose'
+        ? await execa('docker', ['compose', 'build', ...buildArgs], {
+            cwd: baseImageDir, env: mergedEnv, reject: false, all: true,
+          })
+        : await execa('docker-compose', ['build', ...buildArgs], {
+            cwd: baseImageDir, env: mergedEnv, reject: false, all: true,
+          });
+
+      capturedOutput = result.all ?? (result.stdout + '\n' + result.stderr);
+
+      if (result.exitCode !== 0) {
+        spinner.fail(`${stepLabel}  metagraph-base-image build failed`);
+        const tail = lastLines(capturedOutput, 10);
+        if (tail) {
+          logger.section('Last 10 lines of Docker output');
+          process.stderr.write(tail + '\n');
+        }
+        logger.error(
+          `${stepLabel} failed: Docker build failed for metagraph-base-image\n` +
+            `   Check the Docker build output above and re-run with --no_cache`
+        );
+      }
+
+      const elapsed = formatElapsed(Date.now() - stepStart);
+      spinner.succeed(`${stepLabel}  metagraph-base-image ready   ${elapsed}`);
+    } catch (err) {
+      spinner.fail(`${stepLabel}  metagraph-base-image build failed`);
+      const tail = lastLines(capturedOutput, 10);
+      if (tail) {
+        logger.section('Last 10 lines of Docker output');
+        process.stderr.write(tail + '\n');
+      }
+      logger.error(
+        `${stepLabel} failed: Docker build failed for metagraph-base-image\n` +
+          `   Error: ${(err as Error).message}`
       );
     }
 
-    logger.success('Metagraph base image built');
-
-    // Copy JARs from built image to infra/shared/jars/
-    await this.copyJarsFromImage(opts.infraPath);
+    // Copy JARs (Step 3)
+    await this.copyJarsFromImage(opts.infraPath, opts.stepNum + 1, opts.totalSteps);
   }
 
   // ------------------------------------------------------------------
   // Private: copy /code/shared_jars/ from container to infra/shared/jars/
   // ------------------------------------------------------------------
 
-  private async copyJarsFromImage(infraPath: string): Promise<void> {
-    logger.detail('Copying jars to infra/shared/jars...');
+  private async copyJarsFromImage(
+    infraPath: string,
+    stepNum: number,
+    totalSteps: number
+  ): Promise<void> {
+    const stepLabel = `Step ${stepNum}/${totalSteps}`;
+    logger.step(`${stepLabel}  Copying JARs to infra/shared/jars...`);
+    const spinner = logger.spin('Copying JARs to infra/shared/jars...');
+    const stepStart = Date.now();
     const jarsDestination = path.join(infraPath, 'shared', 'jars');
 
     // Create a temporary container from the base image (do not start it)
@@ -287,11 +390,18 @@ export default class Build extends Command {
 
     try {
       await runDocker(['cp', `${containerId}:/code/shared_jars/.`, jarsDestination]);
+      const elapsed = formatElapsed(Date.now() - stepStart);
+      spinner.succeed(`${stepLabel}  JARs copied   ${elapsed}`);
+    } catch (err) {
+      spinner.fail(`${stepLabel}  Failed to copy JARs from image`);
+      logger.error(
+        `${stepLabel} failed: Could not copy JARs from metagraph-base-image container\n` +
+          `   Error: ${(err as Error).message}\n` +
+          `   Ensure the build succeeded and the container exists`
+      );
     } finally {
       // Always clean up the temp container
       await execa('docker', ['rm', containerId], { reject: false, env: process.env });
     }
-
-    logger.success('Jars copied to infra/shared/jars');
   }
 }

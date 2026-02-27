@@ -18,9 +18,11 @@ import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
 import { execa } from 'execa';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
+import { confirmYN } from '../../utils/prompt.js';
 import { buildAnsiblePaths, runAnsible } from '../../utils/docker.js';
 
 export default class Purge extends Command {
@@ -52,10 +54,10 @@ export default class Purge extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -67,9 +69,13 @@ export default class Purge extends Command {
     // ----------------------------------------------------------------
     // 3. Destroy containers (matches destroy_containers() call in bash)
     // ----------------------------------------------------------------
-    logger.header('################################## PURGE ##################################');
-    logger.detail('Starting purging containers ...');
+    logger.section('PURGE');
 
+    if (!(await confirmYN('⚠  This will destroy all containers AND delete all images. Continue?'))) {
+      return;
+    }
+
+    const destroySpinner = logger.spin('Destroying containers...');
     const ansible = buildAnsiblePaths(infraPath);
     const nodesJson = JSON.stringify(config.nodes);
     const baseEnv: NodeJS.ProcessEnv = {
@@ -77,7 +83,15 @@ export default class Purge extends Command {
       INFRA_PATH: infraPath,
     };
 
-    await runAnsible(ansible.containersDestroy, {}, baseEnv);
+    try {
+      await runAnsible(ansible.containersDestroy, {}, baseEnv);
+      destroySpinner.succeed('Containers destroyed');
+    } catch (err) {
+      destroySpinner.fail('Failed to destroy containers');
+      logger.error(
+        `✖  Command failed: local purge\n   Reason: Ansible destroy playbook failed — ${(err as Error).message}\n   Fix:    Check Docker is running and try again`
+      );
+    }
 
     // ----------------------------------------------------------------
     // 4. Remove Docker images (matches destroy_images() in purge.sh)
@@ -87,10 +101,10 @@ export default class Purge extends Command {
     // ----------------------------------------------------------------
     // 5. Optionally delete source/project/<project_name>
     // ----------------------------------------------------------------
-    if (flags.delete_project && config.project_name) {
-      const projectDir = path.join(sourcePath, 'project', config.project_name);
+    if (flags.delete_project && config.projectName) {
+      const projectDir = path.join(sourcePath, 'project', config.projectName);
       if (fs.existsSync(projectDir)) {
-        logger.info(`Deleting project directory: source/project/${config.project_name}`);
+        logger.step(`Deleting project directory: source/project/${config.projectName}`);
         fs.rmSync(projectDir, { recursive: true, force: true });
         logger.success('Project directory deleted');
       }
@@ -104,7 +118,7 @@ export default class Purge extends Command {
   // ------------------------------------------------------------------
 
   private async destroyImages(): Promise<void> {
-    logger.info('Starting to remove the images...');
+    logger.step('Removing Docker images...');
 
     // Get all metagraph-ubuntu-* image IDs
     const ubuntuImagesResult = await execa(
@@ -113,39 +127,41 @@ export default class Purge extends Command {
     );
 
     // metagraph-base-image
-    logger.detail('Removing image metagraph-base-image');
+    const baseImageSpinner = logger.spin('Removing metagraph-base-image...');
     await execa('docker', ['rmi', '-f', 'metagraph-base-image'], {
       reject: false, env: process.env
     });
-    logger.success('Removed');
+    baseImageSpinner.succeed('metagraph-base-image removed');
 
     // metagraph-ubuntu-* (all tessellation base images)
-    logger.detail('Removing image metagraph-ubuntu-*');
+    const ubuntuSpinner = logger.spin('Removing metagraph-ubuntu-* images...');
     if (ubuntuImagesResult.stdout.trim()) {
       const imageIds = ubuntuImagesResult.stdout.trim().split('\n').filter(Boolean);
       await execa('docker', ['rmi', '-f', ...imageIds], {
         reject: false, env: process.env
       });
     }
-    logger.success('Removed');
+    ubuntuSpinner.succeed('metagraph-ubuntu images removed');
 
     // grafana
-    logger.detail('Removing image grafana/grafana-oss');
+    const grafanaSpinner = logger.spin('Removing grafana/grafana-oss...');
     await execa('docker', ['rmi', '-f', 'grafana/grafana-oss'], {
       reject: false, env: process.env
     });
-    logger.success('Removed');
+    grafanaSpinner.succeed('grafana/grafana-oss removed');
 
     // prometheus
-    logger.detail('Removing image prom/prometheus');
+    const prometheusSpinner = logger.spin('Removing prom/prometheus...');
     await execa('docker', ['rmi', '-f', 'prom/prometheus'], {
       reject: false, env: process.env
     });
-    logger.success('Removed');
+    prometheusSpinner.succeed('prom/prometheus removed');
 
     // Prune dangling images
+    const pruneSpinner = logger.spin('Pruning dangling images...');
     await execa('docker', ['image', 'prune', '-f'], {
       stdio: 'inherit', env: process.env
     });
+    pruneSpinner.succeed('Dangling images pruned');
   }
 }

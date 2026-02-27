@@ -1,694 +1,465 @@
-## Welcome to Euclid Development Environment
+# Euclid Development Environment
+
+A TypeScript CLI (`hydra`) for building, running, and deploying Constellation Network metagraph projects locally and to cloud infrastructure.
 
 ---
 
-## TypeScript CLI (New — Recommended)
-
-The `hydra` CLI has been rewritten in TypeScript. The TypeScript CLI is the recommended way to use Euclid going forward. The legacy bash scripts are deprecated (see below).
-
-### Requirements
-
-- **Node.js ≥ 20** — [nodejs.org](https://nodejs.org)
-- **pnpm ≥ 9** — `npm install -g pnpm`
-- Docker ≥ 26.0.0, Ansible ≥ 2.16, jq, yq (same runtime dependencies as before)
-
-> **Note:** `cargo install argc` is **NO LONGER REQUIRED**. The new TypeScript CLI replaces the `argc`-based bash CLI entirely.
-
-### Setup
+## Quick Start
 
 ```bash
-# 1. Install Node.js dependencies
-pnpm install
-
-# 2. Compile the TypeScript source
-pnpm run build
-
-# 3. Run the CLI
+git clone https://github.com/Constellation-Labs/euclid-development-environment
+cd euclid-development-environment
+npm install && npm run build
 ./bin/hydra --help
-
-# Or run directly without compiling (development mode):
-pnpm dev -- --help
 ```
 
-### Usage
+---
 
-All commands from the original bash CLI are available:
+## Global Installation
+
+Install `hydra` globally so it's available from any directory:
 
 ```bash
-./bin/hydra local build
-./bin/hydra local start-genesis
-./bin/hydra local start-rollback
-./bin/hydra local stop
-./bin/hydra local destroy
-./bin/hydra local purge
-./bin/hydra local status
-./bin/hydra local logs <container> <layer>
-./bin/hydra local install
-./bin/hydra local install-template --list
+# Clone and install dependencies
+git clone https://github.com/marcus-constellation-ai/euclid-development-environment
+cd euclid-development-environment
+npm install
+
+# Build and link globally (one-time setup)
+npm run link
+
+# Now call hydra from anywhere
+hydra build
+hydra start-genesis
+hydra status
+```
+
+To uninstall:
+```bash
+npm run unlink
+```
+
+---
+
+## Prerequisites
+
+| Dependency | Minimum Version | Required For |
+|---|---|---|
+| [Node.js](https://nodejs.org) | ≥ 20.0.0 | Running the CLI |
+| [Docker](https://docs.docker.com/engine/install/) + Docker Compose | ≥ 26.0.0 | All local commands |
+| [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html) | ≥ 2.16 | Remote commands |
+| [jq](https://jqlang.github.io/jq/download/) | any | Some Ansible playbooks |
+
+> Docker must have at least **8 GB RAM** allocated (Docker Desktop → Settings → Resources).
+
+---
+
+## Configuration
+
+All CLI commands read `euclid.json` from the current directory (or the nearest parent directory). Create and edit this file to match your project before running any commands.
+
+### Full `euclid.json` Reference
+
+```jsonc
+{
+  // ── Versioning ────────────────────────────────────────────────────────────
+  "version": "0.19.0",          // Euclid config schema version
+  "tessellation_version": "4.0.0-rc.0", // Tessellation runtime to build against
+  "ref_type": "tag",            // Git ref type for tessellation: "tag" | "branch"
+
+  // ── Project ───────────────────────────────────────────────────────────────
+  "projectName": "my-metagraph", // Project directory name; used by install / destroy / purge
+  "githubToken": "",             // GitHub PAT for private template repos (leave empty for public)
+
+  "tessellation": {
+    "version": "latest"          // Override tessellation build version ("latest" uses tessellation_version)
+  },
+
+  // ── Scala Framework ───────────────────────────────────────────────────────
+  "framework": {
+    "name": "currency",          // Framework type: "currency"
+    "modules": ["data"],         // Optional modules: "data"
+    "version": "v3.6.0",         // Framework git tag or branch
+    "ref_type": "tag"            // "tag" | "branch"
+  },
+
+  // ── Layers ────────────────────────────────────────────────────────────────
+  "layers": [                    // Enabled network layers (determines what gets built/started/stopped)
+    "global-l0",
+    "metagraph-l0",
+    "currency-l1",
+    "data-l1"
+  ],
+
+  // ── Local Docker Nodes ────────────────────────────────────────────────────
+  "nodes": [                     // One entry per local Docker container
+    {
+      "name": "metagraph-node-1",            // Docker container name
+      "key_file": {
+        "name": "token-key.p12",             // p12 filename in source/p12-files/
+        "alias": "token-key",                // p12 key alias
+        "password": "password"               // p12 key password
+      }
+    },
+    {
+      "name": "metagraph-node-2",
+      "key_file": { "name": "token-key-1.p12", "alias": "token-key-1", "password": "password" }
+    },
+    {
+      "name": "metagraph-node-3",
+      "key_file": { "name": "token-key-2.p12", "alias": "token-key-2", "password": "password" }
+    }
+  ],
+
+  // ── p12 Files (Remote Deploy) ─────────────────────────────────────────────
+  "p12Files": [                  // Standalone p12 references used by remote deploy
+    { "fileName": "token-key.p12",   "keyAlias": "token-key",   "password": "password" },
+    { "fileName": "token-key-1.p12", "keyAlias": "token-key-1", "password": "password" },
+    { "fileName": "token-key-2.p12", "keyAlias": "token-key-2", "password": "password" }
+  ],
+
+  // ── Snapshot Fees ─────────────────────────────────────────────────────────
+  "snapshot_fees": {
+    "owner": {                   // p12 credentials for the snapshot owner address
+      "key_file": { "name": "token-key.p12", "alias": "token-key", "password": "password" }
+    },
+    "staking": {                 // p12 credentials for the staking address (must differ from owner)
+      "key_file": { "name": "token-key-1.p12", "alias": "token-key-1", "password": "password" }
+    }
+  },
+
+  // ── Monitoring ────────────────────────────────────────────────────────────
+  "monitoring": {
+    "grafana":    { "enabled": false }, // Start a Grafana container alongside nodes
+    "prometheus": { "enabled": false }  // Start a Prometheus container
+  },
+
+  // ── Remote Deployment ─────────────────────────────────────────────────────
+  "deploy": {
+    "network": "integrationnet",  // Target network: "integrationnet" | "mainnet"
+
+    "gl0Node": {                  // The Global L0 node your metagraph will connect to
+      "ip": "1.2.3.4",            // GL0 host IP
+      "id": "abc123...",          // GL0 peer ID
+      "publicPort": 9000          // GL0 public HTTP port
+    },
+
+    "jvm": {                      // JVM memory settings for remote nodes (all optional — shown are defaults)
+      "min_heap": "1g",
+      "max_heap": "2g",
+      "metaspace_size": "256m",
+      "max_metaspace_size": "512m",
+      "additional_opts": ""
+    },
+
+    "ansible": {
+      "hosts": "infra/ansible/remote/hosts.ansible.yml", // Ansible inventory file
+
+      "nodes": {                  // Playbooks for node deploy/start
+        "playbooks": {
+          "deploy": "infra/ansible/remote/nodes/playbooks/deploy/deploy.ansible.yml",
+          "start":  "infra/ansible/remote/nodes/playbooks/start/start.ansible.yml"
+        }
+      },
+
+      "monitoring": {             // Playbooks for monitoring service deploy/start
+        "playbooks": {
+          "deploy": "infra/ansible/remote/monitoring/playbooks/deploy/deploy.ansible.yml",
+          "start":  "infra/ansible/remote/monitoring/playbooks/start/start.ansible.yml"
+        }
+      }
+    }
+  }
+}
+```
+
+### p12 Key Files
+
+Place `.p12` files in `source/p12-files/`. The default files (`token-key.p12`, `token-key-1.p12`, `token-key-2.p12`) are provided for local development only. **Replace them with your own before deploying to IntegrationNet or MainNet.**
+
+---
+
+## Commands Reference
+
+All commands accept `-h` / `--help` for inline usage.
+
+Top-level aliases are available for all commands (e.g., `hydra build` = `hydra local build`, `hydra remote-deploy` = `hydra remote deploy`).
+
+### Local Commands
+
+Manage the local Docker-based development environment.
+
+| Command | Description | Notable Flags |
+|---|---|---|
+| `local build` | Build Docker images (metagraph-ubuntu + metagraph-base-image). Compiles Scala via sbt and copies JARs to `infra/shared/jars/`. | `--no_cache` — skip Docker layer cache<br>`--run` — start genesis automatically after build |
+| `local start-genesis` | Start all configured layers from genesis (wipes previous state). Polls for metagraph ID and prints node URLs. | — |
+| `local start-rollback` | Start all configured layers from the last snapshot (preserves history). | — |
+| `local stop` | Stop all running layers and containers in the correct teardown order. | — |
+| `local destroy` | Stop and remove all containers, Docker network, and genesis files. | `--delete_project` — also remove project source directory |
+| `local purge` | All of `destroy`, plus removes all Docker images (`metagraph-base-image`, `metagraph-ubuntu-*`, Grafana, Prometheus) and prunes dangling images. | — |
+| `local status` | Check Docker health, print metagraph ID, show per-container status with live health checks, print cluster URLs. | — |
+| `local logs` | Stream logs from a running container layer with line-level colorization (ERROR/WARN/DEBUG). Press Ctrl+C to stop. | `<container>` — Docker container name<br>`<layer>` — layer name (e.g. metagraph-l0)<br>`-n` — number of tail lines |
+| `local install` | Scaffold a new Scala metagraph project via g8 and initialize a git repo. | — |
+| `local install-template` | Clone a template from metagraph-examples and copy it to `source/project/`. Updates `projectName` in `euclid.json`. | `--name` — template name<br>`--list` — list available templates |
+| `local update` | Pull the latest CLI version via `git pull` and report what changed. | — |
+
+### Remote Commands
+
+Deploy and operate metagraph nodes on cloud infrastructure via Ansible and SSH.
+
+| Command | Description | Notable Flags |
+|---|---|---|
+| `remote create-remote-genesis` | Run local Docker containers in genesis mode to generate `genesis.snapshot` and `genesis.address` in `infra/shared/genesis/`. Must be run before `remote deploy`. | — |
+| `remote deploy` | Copy JARs, genesis files, and p12 keys to remote nodes via Ansible. | `--force-genesis` — wipe remote state (prompts for confirmation) |
+| `remote start` | Start the metagraph on remote nodes. Handles genesis vs rollback mode. | `--force-genesis`<br>`--force-owner-message`<br>`--force-staking-message` |
+| `remote status` | Fetch `/node/info` from each remote node and print a status table (state, host, ports, peer ID). | — |
+| `remote logs` | SSH into a remote node or monitoring host and tail the application log. | — |
+| `remote snapshot-fee-config` | Read the remote metagraph ID and fetch the latest global snapshot to show current Owner and Staking fee message configuration. | — |
+
+### Monitoring Service Commands
+
+| Command | Description |
+|---|---|
+| `remote install-monitoring-service` | Clone `metagraph-monitoring-service` into `source/` and populate `config/config.json` from `euclid.json`. |
+| `remote deploy-monitoring-service` | Deploy the monitoring service to the remote monitoring host via Ansible. |
+| `remote start-monitoring-service` | Start (or restart) the monitoring service on the remote host. Use `--force-restart` to force a full metagraph restart. |
+
+---
+
+## Terminal Output Examples
+
+### HYDRA Banner
+
+Displayed when `hydra` is invoked with no arguments or `--help`:
+
+```
+  _   _  _  _  ____   ____    _
+ | | | || \/ ||  _ \ |  _ \  / \
+ | |_| || || || | | || |_) |/ _ \
+ |  _  || || || |_| ||  _ </ ___ \
+ |_| |_||_||_||____/ |_| \_/_/   \_\
+
+ Euclid Development Environment  v0.19.0
+ Constellation Network metagraph tooling
+```
+
+### Metagraph Running Panel
+
+Displayed after `hydra local start-genesis` completes:
+
+```
+╭──────────────────────────────────────────────────────────────────────╮
+│                                                                      │
+│  Metagraph Running                                                   │
+│                                                                      │
+│  Metagraph ID  DAG4o6vTFTuPJdRUBTBu1pFEqJbHnoZQBj6s                │
+│                                                                      │
+│  metagraph-node-1                                                    │
+│    Global L0    http://localhost:9000/node/info                      │
+│    Metagraph L0 http://localhost:9200/node/info                      │
+│    Currency L1  http://localhost:9300/node/info                      │
+│    Data L1      http://localhost:9400/node/info                      │
+│                                                                      │
+│  metagraph-node-2                                                    │
+│    Metagraph L0 http://localhost:9210/node/info                      │
+│    Currency L1  http://localhost:9310/node/info                      │
+│    Data L1      http://localhost:9410/node/info                      │
+│                                                                      │
+│  metagraph-node-3                                                    │
+│    Metagraph L0 http://localhost:9220/node/info                      │
+│    Currency L1  http://localhost:9320/node/info                      │
+│    Data L1      http://localhost:9420/node/info                      │
+│                                                                      │
+│  Clusters                                                            │
+│    Global L0    http://localhost:9000/cluster/info                   │
+│    Metagraph L0 http://localhost:9200/cluster/info                   │
+│    Currency L1  http://localhost:9300/cluster/info                   │
+│    Data L1      http://localhost:9400/cluster/info                   │
+│                                                                      │
+╰──────────────────────────────────────────────────────────────────────╯
+
+✔  local start-genesis complete  (4m 12s)
+```
+
+### Status Table
+
+Displayed by `hydra local status`:
+
+```
+ℹ  Metagraph ID: DAG4o6vTFTuPJdRUBTBu1pFEqJbHnoZQBj6s
+
+─── Containers ─────────────────────────────────────────
+
+┌───────────────────────┬───────────┬──────────────┬───────┬──────────────┐
+│ Container             │ Status    │ Layer        │ Port  │ Health       │
+├───────────────────────┼───────────┼──────────────┼───────┼──────────────┤
+│ metagraph-node-1      │ ✔ Up      │ metagraph-l0 │ 9200  │ ✔ Healthy    │
+│ metagraph-node-2      │ ✔ Up      │ metagraph-l0 │ 9210  │ ✔ Healthy    │
+│ metagraph-node-3      │ ✔ Up      │ metagraph-l0 │ 9220  │ ✔ Healthy    │
+│ grafana               │ ✔ Up      │ monitoring   │ 3000  │ N/A          │
+└───────────────────────┴───────────┴──────────────┴───────┴──────────────┘
+
+✔  local status complete  (8s)
+```
+
+### Build Progress
+
+```
+→ Step 1/3  Building metagraph-ubuntu base image...
+✔ Step 1/3  metagraph-ubuntu ready   (52s)
+→ Step 2/3  Building metagraph-base-image...
+✔ Step 2/3  metagraph-base-image ready   (2m 38s)
+→ Step 3/3  Copying JARs to infra/shared/jars...
+✔ Step 3/3  JARs copied   (4s)
+
+✔  local build complete  (3m 34s)
+```
+
+---
+
+## Development
+
+### Run from Source (No Build Required)
+
+```bash
+npm install
+npm run dev -- --help
+npm run dev -- local status
+```
+
+`npm run dev` uses [tsx](https://github.com/privatenumber/tsx) to execute TypeScript directly.
+
+### Build
+
+```bash
+npm run build          # compile src/ → dist/
+npm run build:watch    # watch mode
+```
+
+### Type-check Without Building
+
+```bash
+npm run typecheck
+```
+
+### Lint and Format
+
+```bash
+npm run lint           # ESLint
+npm run lint:fix       # auto-fix
+npm run format         # Prettier (write)
+npm run format:check   # Prettier (check only)
+```
+
+### Tests
+
+```bash
+npm test               # run all tests once (vitest)
+npm run test:watch     # watch mode
+```
+
+### Project Structure
+
+```
+euclid-development-environment/
+├── bin/hydra              # Production CLI entry point
+├── euclid.json            # Project configuration
+├── src/
+│   ├── index.ts           # oclif entry point + startup banner
+│   ├── config/            # Zod schemas + config loader
+│   ├── commands/
+│   │   ├── local/         # Local Docker commands
+│   │   └── remote/        # Remote Ansible commands
+│   └── utils/
+│       ├── logger.ts      # Spinners, boxen panels, tables, colors
+│       ├── docker.ts      # Docker / Ansible helpers
+│       ├── ansible.ts     # Ansible runner + SSH helpers
+│       ├── dependencies.ts# Startup dependency checks
+│       └── time.ts        # Elapsed-time helpers
+├── tests/
+│   ├── unit/              # Vitest unit tests
+│   └── integration/
+├── infra/
+│   ├── ansible/           # Ansible playbooks (local + remote)
+│   ├── grafana/           # Grafana + Prometheus docker-compose
+│   ├── metagraph-base-image/  # Scala build Dockerfile
+│   └── metagraph-ubuntu/  # Tessellation JARs Dockerfile
+└── source/
+    ├── global-l0/genesis/ # Optional custom genesis.csv for Global L0
+    ├── metagraph-l0/genesis/ # Optional custom genesis.csv for Metagraph L0
+    ├── p12-files/         # p12 key files
+    └── project/           # Metagraph Scala source code
+```
+
+---
+
+## Grafana Monitoring
+
+Enable the Grafana dashboard by setting `monitoring.grafana.enabled` to `true` in `euclid.json`:
+
+```json
+"monitoring": {
+  "grafana": { "enabled": true },
+  "prometheus": { "enabled": true }
+}
+```
+
+After `hydra local start-genesis`, Grafana is available at **http://localhost:3000** (default credentials: `admin` / `admin`). Two dashboards are pre-configured under the Dashboards section.
+
+---
+
+## Remote Deployment Workflow
+
+### 1. Configure Hosts
+
+Edit `infra/ansible/remote/hosts.ansible.yml` with your server details (IP, user, SSH key path). Minimum recommended specs per node: 16 GB RAM, 8 vCPU, 160 GB storage, Ubuntu 20.04 or 22.04.
+
+### 2. Configure `euclid.json`
+
+Set `deploy.network`, `deploy.gl0Node.ip/id/publicPort`, and your p12 credentials.
+
+### 3. Genesis Deploy (First Time)
+
+```bash
+# Generate genesis files locally
+./bin/hydra remote create-remote-genesis
+
+# Copy everything to remote hosts (wipes existing state)
+./bin/hydra remote deploy --force-genesis
+
+# Start the metagraph from genesis
+./bin/hydra remote start --force-genesis
+```
+
+### 4. Subsequent Starts (Rollback Mode)
+
+```bash
 ./bin/hydra remote deploy
 ./bin/hydra remote start
-./bin/hydra remote status
 ```
 
-Backward-compatible top-level aliases still work:
+### 5. Verify
 
-```bash
-./bin/hydra build           # same as: ./bin/hydra local build
-./bin/hydra start-genesis   # same as: ./bin/hydra local start-genesis
-./bin/hydra remote-deploy   # same as: ./bin/hydra remote deploy
-```
+After startup, check snapshot generation on the block explorer:
 
-### Troubleshooting
+- IntegrationNet: `https://be-integrationnet.constellationnetwork.io/currency/<metagraph_id>/snapshots/latest`
+- MainNet: `https://be-mainnet.constellationnetwork.io/currency/<metagraph_id>/snapshots/latest`
 
-| Problem | Solution |
-|---------|----------|
-| `Error: Cannot find module '../dist/index.js'` | Run `pnpm run build` first |
-| `pnpm: command not found` | Run `npm install -g pnpm` |
-| `Could not find euclid.json` | Run hydra from the project root (where `euclid.json` lives) |
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `Cannot find module '../dist/index.js'` | Run `npm run build` first |
+| `Could not find euclid.json` | Run `hydra` from the project root where `euclid.json` lives |
 | `Docker version X.Y.Z detected. Minimum required: 26.0.0` | Upgrade Docker to ≥ 26.0.0 |
 | `ansible-playbook: command not found` | Install Ansible: `pip install ansible` (≥ 2.16) |
-| `yq` check fails | Install Mike Farah's yq from [github.com/mikefarah/yq](https://github.com/mikefarah/yq) |
-| TypeScript build errors | Run `pnpm typecheck` to see all errors |
-| ESLint errors | Run `pnpm lint:fix` for auto-fixable issues |
-
----
-
-# Legacy Bash CLI (Deprecated)
-
-> **Deprecation Notice:** The bash scripts in `scripts/hydra` are deprecated and will be removed in a future release. Please migrate to the TypeScript CLI above.
->
-> To use the TypeScript CLI instead:
-> ```bash
-> pnpm install && pnpm run build && ./bin/hydra
-> ```
-
----
-
-# Dependencies
-## Docker
-* You should have Docker installed
-* Check the [installation guide](https://docs.docker.com/engine/install/)
-* You need to have **at least 8GB of RAM allocated to Docker**
-
-## Cargo
-* Cargo is the Rust package manager
-* [Here](https://doc.rust-lang.org/cargo/getting-started/installation.html) you can check how to install Rust and Cargo
-
-## Ansible
-* Ansible is a configuration tool for configuring and deploying to remote hosts
-* [Here](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html) you can check how to install Ansible
-
-## JQ
-* jq is a lightweight and flexible command-line JSON processor. It allows you to manipulate JSON data easily, making it ideal for tasks like querying, filtering, and transforming JSON documents.
-* [Here](https://jqlang.github.io/jq/download/) you can check how to install jq
-
-## YQ
-* yq is a powerful command-line YAML processor and parser, similar to jq but for YAML data. It allows you to query, filter, and manipulate YAML documents easily from the command line, making it a handy tool for tasks such as extracting specific data, updating YAML files, and formatting output.
-* [Here](https://github.com/mikefarah/yq) you can check how to install yq
-
-# First Steps
-
-## Understanding the folder structure
-
-With the euclid-development-environment cloned, you'll see the following structure
-```
-- infra
-- scripts
-- source
-- euclid.json
-```
-let's see what each of these directories represents:
-
-### Infra
-This directory contains infrastructure related to the running of Euclid. 
-- Docker: This directory contains docker configuration, including Dockerfiles, and port, IP, and name configurations for running Euclid locally. 
-- Ansible: This directory contains Ansible configurations to start your nodes locally and remotely
-  - **local**: Used for start and stop the nodes locally.
-  - **remote**: Used for configuring and deploying to remote hosts
-
-#### Custom Metagraph Base Image Dockerfile
-You can customize your `metagraph-base-image` Dockerfile by creating a new file called `Dockerfile` under the `infra/docker/custom/metagraph-base-image` directory. This allows the build process to load and use your custom Dockerfile, enabling you to add additional features, such as external databases or tools.
-
-This customization feature allows you to tailor your base image to include the specific features you require. Ensure that your custom Dockerfile continues to meet the primary goals of the original file: creating directories, building JARs, and moving the necessary files for execution, such as `genesis.snapshot`.
-
-### Scripts
-Thats the "home" of hydra script, here you'll find the `hydra` and `hydra-update (deprecated)` scripts.
-
-### Source
-Here is the home of the local codebase and required files for each layer.
-- `global-l0/genesis`: In this directory, you can provide a custom `genesis.csv` file. This file contains the initial balances for addresses on global-l0 layer when running start-genesis.
-- `metagraph-l0/genesis`: In this directory, you can provide a custom `genesis.csv` file. This file contains the initial balances for addresses on metagraph-l0 layer which determine your L0 token starting balances when running start-genesis.
-- `p12-files`: In this directory, you can provide custom `.p12` files. This directory contains default files for test development, but they should be overwritten with your own files before deploying to a cloud environment. 
-- `project`: This directory contains all of your custom project code. Projects can be installed here via `hydra install` or `hydra install-template`. 
- 
-### euclid.json
-Here is the hydra configuration file, there you can set the `p12` file names. 
-
-## Hydra scripts options
-Run the following command to list all the possibilities of the `hydra` script
-
-```
-./hydra -h
-```
-
-you should see something like this:
-
-```
-USAGE: hydra <COMMAND>
-
-COMMANDS:
-  install                           Installs a local framework and detaches project
-  install-template                  Installs a project from templates
-  build                             Build containers
-  start-genesis                     Start containers from the genesis snapshot (erasing history) [aliases: start_genesis]
-  create-remote-genesis             Create genesis files to deploy on remote instances [aliases: create_remote_genesis]
-  start-rollback                    Start containers from the last snapshot (maintaining history) [aliases: start_rollback]
-  stop                              Stop containers
-  destroy                           Destroy containers
-  purge                             Destroy containers and images
-  status                            Check the status of the containers
-  remote-deploy                     Remotely deploy to cloud instances using Ansible [aliases: remote_deploy]
-  remote-start                      Remotely start the metagraph on cloud instances using Ansible [aliases: remote_start]
-  remote-status                     Check the status of the remote nodes
-  remote-logs                       Get the logs from the remote hosts
-  remote-snapshot-fee-config        Get the remote snapshot fee config
-  update                            Update Euclid
-  logs                              Get the logs from containers
-  install-monitoring-service        Download the metagraph-monitoring-service (https://github.com/Constellation-Labs/metagraph-monitoring-service) [aliases: install_monitoring_service]
-  remote-deploy-monitoring-service  Deploy the metagraph-monitoring-service to remote host [aliases: remote_deploy_monitoring_service]
-  remote-start-monitoring-service   Start the metagraph-monitoring-service on remote host [aliases: remote_start_monitoring_service]
-```
-
-TIP: You can use the same `-h` in each command listed above to see the accepted parameters
-
-### Building
-Let's start with the `build` command. This command could be used simply this way:
-```
-./hydra build   
-```
-This script has some parameters such as `--no_cache` (run without previous cache), `--run` (automatically run after build).
-
-### Starting
-We have the options `start-genesis` and `start-rollback` to start the containers. This option will fail case you didn't build the images yet.
-```
-./hydra start-genesis
-./hydra start-rollback   
-```
-
-### Stopping
-We have the option `stop` to stop the containers. You can call the option this way:
-```
-./hydra stop   
-```
-
-### Destroying
-We have the option `destroy` to destroy the containers. You can call the option this way:
-```
-./hydra destroy   
-```
-We also have the `purge` option to destroy the containers and clean all images
-```
-./hydra purge   
-```
-### Status
-We have the option `status` to show the containers status. You can call the option this way:
-```
-./hydra status   
-```
-
-### Installing
-We have the option `install` to remove the link with remote `git`. You can call the option this way:
-```
-./hydra install   
-```
-You can import a metagraph template from custom examples by using the following command:
-
-```
-./hydra install-template
-```
-
-By default, we use the [Metagraph Examples](https://github.com/Constellation-Labs/metagraph-examples) repository. You should provide the template name when running this command. 
-To list the templates available to install, type:
-
-```
-./hydra install-template --list
-```
-### Logs
-We have the option `logs` to show the logs of nodes per container and layer. You can call the option this way:
-```
-./hydra logs :container_name :layer_name   
-```
-
-### Update
-We have the option `update` to update the Euclid. You can call the option this way:
-```
-./hydra update   
-```
-
-
-**NOTE: FOR ALL OPTIONS ABOVE YOU CAN USE `-h` TO CHECK THE AVAILABLE PARAMETERS** 
-
-## Let's build
-
-> **Deprecated:** The bash-based workflow below requires `argc` and Rust's `cargo`. This approach is deprecated. Use the [TypeScript CLI](#typescript-cli-new--recommended) instead — no `argc` or `cargo` required.
-
-After understanding the folder structure, we can start build our containers.
-
-Move your terminal to directory `/scripts`, home of the `hydra` script.
-
-```
-  cd scripts/
-```
-
-We need to install `argc` to run the script, [here](https://github.com/sigoden/argc) is the doc of `argc`
-
-```
-cargo install argc
-```
-
-Then run the following to build your containers
-```
-./hydra build
-```
-
-After the end of this step, run the following:
-```
-./hydra start-genesis
-```
-
-After the end of `start-genesis`, you should see something like this:
-```
-######################### METAGRAPH INFO #########################
-
-Metagraph ID: :your_metagraph_id
-
-
-Container metagraph-node-1 URLs
-Global L0: http://localhost:9000/node/info
-Metagraph L0: http://localhost:9200/node/info
-Currency L1: http://localhost:9300/node/info
-Data L1: http://localhost:9400/node/info
-
-
-Container metagraph-node-2 URLs
-Metagraph L0: http://localhost:9210/node/info
-Currency L1: http://localhost:9310/node/info
-Data L1: http://localhost:9410/node/info
-
-
-Container metagraph-node-3 URLs
-Metagraph L0: http://localhost:9220/node/info
-Currency L1: http://localhost:9320/node/info
-Data L1: http://localhost:9420/node/info
-
-
-Clusters URLs
-Global L0: http://localhost:9000/cluster/info
-Metagraph L0: http://localhost:9200/cluster/info
-Currency L1: http://localhost:9300/cluster/info
-Data L1: http://localhost:9400/cluster/info
-
-####################################################################
-
-
-```
-You can now access the URLs and see that your containers are working properly
-
-You can also call the `hydra` option
-```
-./hydra status
-```
-
-## Grafana
-We have a Grafana container that can monitor your nodes. To enable this feature, modify the following field in `euclid.json` to `true`:
-
-`start_grafana_container=true`
-
-After updating this field, a Grafana container will be constructed when you start the services. You can access this tool at the following URL: http://localhost:3000/. The initial login credentials are:
-```
-username: admin
-password: admin
-```
-You'll be requested to update the password after your first login
-
-In this tool we have 2 dashboards, you can access them on `Dashboard` section
-
-**NOTE: This monitoring feature is distinct from remote monitoring. It displays data from your nodes on Dashboards, allowing you to check various metrics. However, it does not perform restarts or any other operations.**
-
-## Deployment
-
-Configuring, deploying, and starting remote node instances is supported through Ansible playbooks. The default settings deploy to three node instances via SSH which host all layers of your metagraph project (gL0, mL0, cL1, dL1). Two hydra methods are available to help with the deployment process: `hydra remote-deploy` and `hydra remote-start`.
-Prior to running these methods, remote host information must be configured in  `infra/ansible/remote/hosts.ansible.yml`.
-
-By default, we use the default directory for the SSH file, which is `~/.ssh/id_rsa`. However, you can change it to your preferred SSH file directory. You can find instructions on how to generate your SSH file [here](https://git-scm.com/book/en/v2/Git-on-the-Server-Generating-Your-SSH-Public-Key).
-
-Ansible functions more effectively with `.pem` key files. If you possess a `.ppk` key file, you can utilize [these instructions](https://tecadmin.net/convert-ppk-to-pem-using-command/) to convert it to `.pem`.
-
-If your file contains a password, you will be prompted to enter it to proceed with remote operations.
-### Host Configuration
-
-To run your metagraph remotely, you'll need remote server instances - 3 instances for the default configuration. These hosts should be running either `ubuntu-20.04` or `ubuntu-22.04`. It's recommended that each host meets the following minimum requirements:
-
--   16GB of RAM
--   8vCPU
--   160GB of storage
-
-You can choose your preferred platform for hosting your instances, such as AWS or DigitalOcean. After creating your hosts, you'll need to provide the following information in the `hosts.ansible.yml` file:
-
--   Host IP
--   Host user
--   Host SSH key (optional if your default SSH token already has access to the remote host)
-
-### P12 Files
-
-P12 files contain the public/private key pair identifying each node (peerID) and should be located in the `source/p12-files` directory by default. The `file-name`, `key-alias`, and `password` should be specified in the `euclid.json` file under the `p12_files` section. By default, Euclid comes with three example files: `token-key.p12`, `token-key-1.p12`, and `token-key-2.p12`. **NOTE:** Before deploying, be sure to replace these example files with your own, as these files are public and their credentials are shared.
-
-**NOTE:** If deploying to MainNet, ensure that your peerIDs are registered and present on the metagraph seedlist. Otherwise, the metagraph startup will fail because the network will reject the snapshots.
-
-
-### Network Selection
-
-Currently, there are two networks available for running your metagraph: `IntegrationNet`, and `MainNet`. You need to specify the network on which your metagraph will run in the `euclid.json` file under `deploy -> network -> name`.
-
-### GL0 Node Configuration
-
-The deploy script does not deploy the `gl0` node. It's recommended to use `nodectl` to build your `gl0` node. Information on installing `nodectl` can be found [here](https://docs.constellationnetwork.io/validate/automated/nodectl). `Nodectl` helps manage `gl0` nodes by providing tools such as `auto-upgrade` and `auto-restart` which keep the node online in the case of a disconnection or network upgrade. Using these features is highly recommended for the stability of your metagraph. 
-
-**NOTE:** Your GL0 node must be up and running before deploying your metagraph. You can use the same host to run all four layers: `gl0`, `ml0`, `cl1`, and `dl1`.
-
-### `hydra create-remote-genesis`
-The hydra create-remote-genesis command is responsible for generating the genesis files that will be deployed to remote network instances.
-
-**Purpose**
-
-These files define the initial state of the Metagraph-L0 chain and are required to bootstrap the network on remote nodes.
-
-Generated Files
-	•	`genesis.address` – contains the initial ledger address information.
-	•	`genesis.snapshot` – contains the initial snapshot of the network state.
-
-**Output Location**
-
-All generated files are stored in:
-`infra/shared/genesis`
-
-**Usage Notes**
-	•	This command must be executed before deploying the Metagraph-L0 to remote nodes, so those nodes start with a consistent and valid genesis state.
-	•	Ensure that the environment variables and configuration (euclid.json, key files, peer settings) are properly set before running the command.
-	•	Running this command will overwrite any existing genesis files in the target directory.
-
-### `hydra remote-deploy`
-This method configures remote instances with all the necessary dependencies to run a metagraph, including Java, Scala, and required build tools. The Ansible playbook used for this process can be found and edited in `infra/ansible/playbooks/deploy.ansible.yml`. It also creates all required directories on the remote hosts, and creates or updates metagraph files to match your local Euclid environment. Specifically, it creates the following directories:
-
--   `code/global-l0`
--   `code/metagraph-l0`
--   `code/currency-l1`
--   `code/data-l1`
-
-Each directory will be created with `cl-keytool.jar`, `cl-wallet.jar`, and a P12 file for the instance. Additionally, they contain the following:
-
-**In `code/metagraph-l0`:**
--   metagraph-l0.jar     // The executable for the mL0 layer
--   genesis.csv              // The initial token balance allocations
--   genesis.snapshot    // The genesis snapshot created locally
--   genesis.address      // The metagraph address created in the genesis snapshot
--   
-**In `code/currency-l1`:**
--   currency-l1.jar     // The executable for the cL1 layer
--   
-**In `code/data-l1`:**
--   data-l1.jar     // The executable for the dL1 layer
-
-#### Parameters
-If you run the command `./hydra remote-deploy -h` you should see something like
-
-```
-Remotely deploy to cloud instances using Ansible
-
-USAGE: hydra remote-deploy [OPTIONS]
-
-OPTIONS:
-      --force_genesis                                  Force metagraph to deploy as genesis
-  -h, --help   
-```
-* --force_genesis: Use this flag when you want your metagraph to start from genesis. If you have already started a metagraph and need to execute from genesis again, use this command.
- 
-**NOTE: You'll be prompted to proceed with force_genesis since it will delete all the previous data**
-### `hydra remote-start`
-
-This method initiates the remote startup of your metagraph in one of the available networks: integrationnet or mainnet. The network should be set in `euclid.json` under `deploy` -> `network`
-
-To begin the remote startup of the metagraph, we utilize the parameters configured in euclid.json (`network`, `gl0_node -> ip`, `gl0_node -> id`, `gl0_node -> public_port`, `ansible -> hosts`, and `ansible -> playbooks -> start`). The startup process unfolds as follows:
-
-1.  Termination of any processes currently running on the metagraph ports, which by default are 7000 for ml0, 8000 for cl1, and 9000 for dl1 (you can change on `hosts.ansible.yml`).
-2.  Relocation of any existing logs to a folder named `archived-logs`, residing within each layer directory: `metagraph-l0`, `currency-l1`, and `data-l1`.
-3.  Initiation of the `metagraph-l0` layer, with `node-1` designated as the genesis node.
-4.  Initial startup as `genesis`, transitioning to `rollback` for subsequent executions. To force a genesis startup, utilize the `--force_genesis` flag with the `hydra remote-start` command.  This will move the current `data` directory to a folder named `archived-data` and restart the metagraph from the first snapshot.
-5.  Detection of missing files required for layer execution, such as `:your_file.p12` and `metagraph-l0.jar`, triggering an error and halting execution.
-6.  Following the initiation of `metagraph-l0`, the l1 layers, namely `currency-l1` and `data-l1`, are started. These layers only started if present in your project. 
-
-After the script completes execution, you can verify if your metagraph is generating snapshots by checking the block explorer of the selected network:
-
--   Integrationnet: [https://be-integrationnet.constellationnetwork.io/currency/:your_metagraph_id/snapshots/latest](https://be-integrationnet.constellationnetwork.io/currency/:your_metagraph_id/snapshots/latest)
--   Mainnet: [https://be-mainnet.constellationnetwork.io/currency/:your_metagraph_id/snapshots/latest](https://be-mainnet.constellationnetwork.io/currency/:your_metagraph_id/snapshots/latest)
-
-
-You can verify if the cluster was successfully built by accessing the following URL:
-
-`http://{your_host_ip}:{your_layer_port}/cluster/info` 
-
-Replace:
-
--   `{your_host_ip}`: Provide your host's IP address.
--   `{your_layer_port}`: Enter the public port you assigned to each layer.
-
-Each layer directory on every node contains a folder named `logs`. You can monitor and track your metagraph logs by running:
-
-`tail -f logs/app.log`
-
-**NOTE:** Don't forget to add your hosts' information, such as host, user, and SSH key file, to your `infra/ansible/remote/hosts.ansible.yml` file.
-
-#### Parameters
-If you run the command `./hydra remote-start -h` you should see something like
-
-```
-Remotely start the metagraph on cloud instances using Ansible
-
-USAGE: hydra remote-start [OPTIONS]
-
-OPTIONS:
-      --force_genesis                                    Force metagraph to run as genesis
-      --force_owner_message                              Force to send owner message
-      --force_staking_message                            Force to send staking message
-  -h, --help    
-```
-* --force_genesis: Use this flag when you want your metagraph to start from genesis. If you have already started a metagraph and need to execute from genesis again, use this command.
-* --force_owner_message: Use this flag when you want your metagraph to force sending the owner message. For example, if you want to change the owner address, provide this flag.
-* --force_staking_message: Use this flag when you want your metagraph to force sending the staking message. For example, if you want to change the staking address, provide this flag.
-
-**NOTE: You'll be prompted to proceed with force_genesis since it will delete all the previous data**
-
-### `hydra remote-status`
-This method will return the status of your remote hosts. You should see the following:
-```
-################################## Node 1 ##################################
-Metagraph L0
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Currency L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Data L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-
-################################## Node 2 ##################################
-Metagraph L0
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Currency L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Data L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-
-################################## Node 3 ##################################
-Metagraph L0
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Currency L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-
-Data L1
-URL: http://:your_node_ip:your_port/node/info
-State: :state
-Host: :host
-Public port: :your_port
-P2P port: :your_port
-Peer id: :peerId
-```
-
-## Remote Monitoring
-
-We have introduced a tool in version `v0.10.0` that can monitor your metagraph and restart it if necessary.
-
-### Introduction
-This service monitors your metagraph and performs restarts as necessary. It is deployed using Ansible on a remote Ubuntu host. Commands such as `install-monitoring-service`, `remote-deploy-monitoring-service`, and `remote-start-monitoring-service` will be further explained in subsequent sections.
-
-The service is developed using `NodeJS`, and all necessary dependencies are installed on your remote instance during deployment.
-
-Running in the background with PM2, the service initiates checks at intervals specified in the configuration under the field: `check_healthy_interval_in_minutes`. It evaluates the health of the metagraph based on predefined and customizable `restart-conditions`, detailed in the [metagraph-monitoring-service](https://github.com/Constellation-Labs/metagraph-monitoring-service) repository. For example, if an unhealthy node is detected, the service triggers a restart.
-
-To restart a node or layer, the service first attempts to stop any running processes (referring to the layer). This operation requires sudo privileges without a password requirement (refer [to this](https://gcore.com/learning/how-to-disable-password-for-sudo-command/) document for instructions on setting up password-less sudo). In addition to terminating processes, log files from the node are moved to the `code/restart_logs` directory, which may also require sudo privileges.
-
-After these steps, the service restarts the node or layer and reintegrates it into the cluster.
-
-### Installation
-This tool it's not default to Euclid, so you need to install this service. To do this you need to run the following:
-
-`hydra install-monitoring-service`
-
-this command to creates a monitoring project in your source directory, which will be named `metagraph-monitoring-service`
-
-To use this feature, we need to know the informations about the remote host that will be used as monitoring.
-So, you need to populate the file `infra/ansible/remote/hosts.ansible.yml` under the monitoring section.
-You should provide a user that has sudo privileges without requiring a password. Refer to [this document](https://gcore.com/learning/how-to-disable-password-for-sudo-command/) to learn how to enable password-less sudo for a user.
-
-
-### Monitoring Configuration
-
-Before deploying to remote instances, you need to configure your monitoring by editing the file `config/config.json`. When you run the install command, some fields will be auto-populated based on the `euclid.json` file, which includes:
-
--   `metagraph.id`: The unique identifier for your metagraph.
--   `metagraph.name`: The name of your metagraph.
--   `metagraph.version`: The version of your metagraph.
--   `metagraph.default_restart_conditions`: Specifies conditions under which your metagraph should restart. These conditions are located in `src/jobs/restart/conditions`, including:
-  -   `SnapshotStopped`: Triggers if your metagraph stops producing snapshots.
-  -   `UnhealthyNodes`: Triggers if your metagraph nodes become unhealthy.
--   `metagraph.layers`:
-  -   `ignore_layer`: Set to `true` to disable a specific layer.
-  -   `ports`: Specifies public, P2P, and CLI ports.
-  -   `additional_env_variables`: Lists additional environment variables needed upon restart, formatted as `["TEST=MY_VARIABLE, TEST_2=MY_VARIABLE_2"]`.
-  -   `seedlist`: Provides information about the layer seedlist, e.g., `{ base_url: ":your_url", file_name: ":your_file_name"}`.
--   `metagraph.nodes`:
-  -   `ip`: IP address of the node.
-  -   `username`: Username for SSH access.
-  -   `privateKeyPath`: Path to the private SSH key, relative to the service's root directory. Example: `config/your_key_file.pem`.
-  -   `key_file`: Details of the `.p12` key file used for node startup, including `name`, `alias`, and `password`.
--   `network.name`: The network your metagraph is part of, such as `integrationnet` or `mainnet`.
--   `network.nodes`: Information about the GL0s nodes.
--   `check_healthy_interval_in_minutes`: The interval, in minutes, for running the health check.
-
-NOTE: You must provide your SSH key file that has access to each node. It is recommended to place this under the `config` directory. Ensure that this file has access to the node and that the user you've provided also has sudo privileges without a password.
-
-### Customize Monitoring
-
-Learn how to customize your monitoring by checking the repositories:
-
--   [metagraph-monitoring-service-package](https://github.com/Constellation-Labs/metagraph-monitoring-service-package)
--   [metagraph-monitoring-service](https://github.com/Constellation-Labs/metagraph-monitoring-service-package)
-
-### Deploying Monitoring
-
-Once you've configured your metagraph monitoring, deploy it to the remote host with:
-
-`hydra remote-deploy-monitoring-service`
-
-This command sends your current monitoring service from euclid to your remote instance and downloads all necessary dependencies.
-
-### Starting Monitoring
-
-After deployment, start your monitoring with:
-
-`hydra remote-start-monitoring-service`
-
-To force a complete restart of your metagraph, use:
-
-`hydra remote-start-monitoring-service --force-restart` 
-
-### Deploying and Running the Metagraph from Genesis
-
-If you need to start your metagraph from **genesis** (wiping all previous state and starting from the very first snapshot), follow these steps in order:
-
-#### 1. Create Remote Genesis Files
-Run `./hydra create-remote-genesis` to generate the required genesis files (**genesis.address** and **genesis.snapshot**) under:
-
-`infra/shared/genesis`
-
-These files define the initial state of your Metagraph-L0 and will be deployed to your remote instances.
-
-> **Tip:** Ensure your `euclid.json` and key files are correctly configured before running this step.
-
----
-
-#### 2. Deploy to Remote Instances
-Run `./hydra remote-deploy --force_genesis` to install all dependencies, create the necessary directory structure on each remote instance, and copy over the genesis files and executable JARs.  
-
-The `--force_genesis` flag ensures that any existing state on the remote instances is deleted so the metagraph will start fresh from genesis.
-
-> **Warning:** This action will remove all existing data on the remote metagraph directories.
-
----
-
-#### 3. Start the Metagraph from Genesis
-Run `./hydra remote-start --force_genesis` to:
-
-1. Terminate any processes on metagraph ports.
-2. Archive existing logs and data directories.
-3. Start the `metagraph-l0` layer as the **genesis node**.
-4. Start the L1 layers (`currency-l1` and/or `data-l1`) if they exist in your project.
-
-After the startup:
-- Verify snapshot generation using the block explorer for your network.
-- Check the cluster info endpoint: `http://{your_host_ip}:{your_layer_port}/cluster/info`
-- Follow logs with `tail -f logs/app.log`
-
----
-
-#### Quick Command Sequence
-1. `./hydra create-remote-genesis`  
-2. `./hydra remote-deploy --force_genesis`  
-3. `./hydra remote-start --force_genesis`
-
-> **Note:** You’ll be prompted for confirmation when using `--force_genesis` since it deletes all existing data.
+| `docker: command not found` | Install Docker from [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+| TypeScript build errors | Run `npm run typecheck` to see all type errors |
+| ESLint errors | Run `npm run lint:fix` for auto-fixable issues |
+| `git: command not found` | Install Git from [git-scm.com](https://git-scm.com) |
+| SSH key not loaded for remote commands | Run `ssh-add ~/.ssh/your_key` before remote commands |
+| Remote deploy fails — p12 placeholder | Replace `:gl0_node_ip`, `:gl0_node_id`, `:gl0_node_public_port` in `euclid.json` with real values |
+| Metagraph rejects snapshots on MainNet | Ensure your peer IDs are on the metagraph seedlist |
+| Build runs out of Docker memory | Increase Docker RAM allocation to ≥ 8 GB |

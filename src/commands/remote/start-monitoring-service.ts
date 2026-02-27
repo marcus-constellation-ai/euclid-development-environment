@@ -4,21 +4,12 @@
  * Bash equivalent: remote-start-monitoring-service() / remote_start_monitoring_service() alias
  *                  → remote_start_monitoring_service() in
  *                    scripts/hydra-operations/remote-start-monitoring-service.sh
- *
- * Ansible invocation (exact match of bash):
- *   ANSIBLE_DEPRECATION_WARNINGS=False
- *   ansible-playbook -e "force_restart=true|false"
- *                    -i <hostsFile>
- *                    <monitoringStartPlaybook>
- *
- * The start playbook runs either:
- *   - yarn start         (force_restart=false)
- *   - yarn force-restart (force_restart=true)
  */
 import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, info, success } from '../../utils/logger.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger } from '../../utils/logger.js';
 import { runPlaybook, checkMonitoringHostFile } from '../../utils/ansible.js';
 
 export default class StartMonitoringService extends Command {
@@ -52,16 +43,16 @@ export default class StartMonitoringService extends Command {
   async run(): Promise<void> {
     const { flags } = await this.parse(StartMonitoringService);
 
-    header('REMOTE START MONITORING SERVICE');
+    logger.section('REMOTE START MONITORING SERVICE');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote start-monitoring-service\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const hostsFile = path.resolve(rootPath, config.deploy.ansible.hosts);
     const startPlaybook = path.resolve(
@@ -72,17 +63,21 @@ export default class StartMonitoringService extends Command {
     // Validate monitoring host (IP, SSH key in agent)
     await checkMonitoringHostFile(hostsFile);
 
-    info('Starting monitoring service on remote host...');
-    this.log('');
-
-    // Extra vars — exact match of bash -e flag in remote-start-monitoring-service.sh
+    const spinner = logger.spin('Starting monitoring service on remote host...');
     const extraVars: Record<string, string> = {
       force_restart: String(flags['force-restart']),
     };
 
-    // ANSIBLE_DEPRECATION_WARNINGS=False is included in ANSIBLE_QUIET_ENV inside runPlaybook
-    await runPlaybook(startPlaybook, extraVars, hostsFile);
+    try {
+      await runPlaybook(startPlaybook, extraVars, hostsFile);
+      spinner.succeed('Monitoring service started');
+    } catch (err) {
+      spinner.fail('Failed to start monitoring service');
+      logger.error(
+        `✖  Command failed: remote start-monitoring-service\n   Reason: Ansible playbook failed — ${(err as Error).message}\n   Fix:    Check Ansible output above and verify SSH keys are loaded`
+      );
+    }
 
-    success('Monitoring service started successfully.');
+    logger.success('Monitoring service started successfully.');
   }
 }

@@ -398,7 +398,8 @@ export async function pollMetagraphId(
       throw new Error('Could not find the metagraph_id after maximum retries');
     }
 
-    process.stdout.write(`metagraph_id not found, trying again in ${sleepMs / 1000}s...\n`);
+    // Use direct stderr write to avoid circular import with logger
+    process.stderr.write(`  · metagraph_id not found, retrying in ${sleepMs / 1000}s...\n`);
     await sleep(sleepMs);
   }
 

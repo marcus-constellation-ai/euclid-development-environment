@@ -15,8 +15,10 @@
  */
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, success as logSuccess, info, detail, urlLine } from '../../utils/logger.js';
+import chalk from 'chalk';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger } from '../../utils/logger.js';
 import { parseHosts, checkNodesHostFile } from '../../utils/ansible.js';
 
 /** Node info response from /node/info endpoint */
@@ -49,22 +51,6 @@ async function fetchNodeInfo(url: string): Promise<NodeInfo | null> {
   }
 }
 
-/**
- * Print node info, matching fetch_node_info() output in remote-status.sh.
- * Uses echo_url style: label in yellow, value in white.
- */
-function printNodeInfo(nodeInfo: NodeInfo | null): void {
-  if (!nodeInfo) {
-    process.stdout.write('\x1b[31mCould not fetch node info\x1b[0m\n');
-    return;
-  }
-  urlLine('State:', nodeInfo.state);
-  urlLine('Host:', nodeInfo.host);
-  urlLine('Public port:', String(nodeInfo.publicPort));
-  urlLine('P2P port:', String(nodeInfo.p2pPort));
-  urlLine('Peer id:', nodeInfo.id);
-}
-
 export default class RemoteStatus extends Command {
   static override id = 'remote:status';
 
@@ -79,16 +65,16 @@ export default class RemoteStatus extends Command {
   static override aliases = ['remote-status', 'remote:remote-status'];
 
   async run(): Promise<void> {
-    header('REMOTE STATUS');
+    logger.section('REMOTE STATUS');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote status\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const hostsFile = path.resolve(rootPath, config.deploy.ansible.hosts);
 
@@ -103,45 +89,62 @@ export default class RemoteStatus extends Command {
     const currencyL1Port = nodeVars.base_currency_l1_public_port;
     const dataL1Port = nodeVars.base_data_l1_public_port;
 
-    let index = 1;
-    this.log('');
+    // Collect rows for the status table
+    const tableRows: string[][] = [];
 
-    for (const [, nodeInfo] of Object.entries(nodeHosts)) {
+    let index = 1;
+    for (const [nodeName, nodeInfo] of Object.entries(nodeHosts)) {
       const ip = String(nodeInfo.ansible_host);
 
-      header(`Node ${index}`);
+      logger.section(`Node ${index} — ${ip}`);
 
-      // Metagraph L0
-      process.stdout.write('\x1b[32mMetagraph L0\x1b[0m\n');
+      // Fetch all three layers in parallel
       const ml0Url = `http://${ip}:${metagraphL0Port}/node/info`;
-      urlLine('URL:', ml0Url);
-      const ml0Info = await fetchNodeInfo(ml0Url);
-      printNodeInfo(ml0Info);
-      this.log('');
-
-      // Currency L1
-      process.stdout.write('\x1b[32mCurrency L1\x1b[0m\n');
       const cl1Url = `http://${ip}:${currencyL1Port}/node/info`;
-      urlLine('URL:', cl1Url);
-      const cl1Info = await fetchNodeInfo(cl1Url);
-      printNodeInfo(cl1Info);
-      this.log('');
-
-      // Data L1
-      process.stdout.write('\x1b[32mData L1\x1b[0m\n');
       const dl1Url = `http://${ip}:${dataL1Port}/node/info`;
-      urlLine('URL:', dl1Url);
-      const dl1Info = await fetchNodeInfo(dl1Url);
-      printNodeInfo(dl1Info);
-      this.log('');
+
+      const [ml0Info, cl1Info, dl1Info] = await Promise.all([
+        fetchNodeInfo(ml0Url),
+        fetchNodeInfo(cl1Url),
+        fetchNodeInfo(dl1Url),
+      ]);
+
+      // Print individual layer info
+      this.printLayerInfo('Metagraph L0', ml0Url, ml0Info);
+      this.printLayerInfo('Currency L1', cl1Url, cl1Info);
+      this.printLayerInfo('Data L1', dl1Url, dl1Info);
+
+      // Add rows to table
+      const layerStatus = (info: NodeInfo | null, layer: string, port: string | number): string[] => {
+        const statusCell = info
+          ? `${chalk.green('✔')} ${info.state}`
+          : `${chalk.red('✖')} Down`;
+        return [nodeName, statusCell, layer, String(port)];
+      };
+
+      tableRows.push(layerStatus(ml0Info, 'Metagraph L0', metagraphL0Port));
+      tableRows.push(layerStatus(cl1Info, 'Currency L1', currencyL1Port));
+      tableRows.push(layerStatus(dl1Info, 'Data L1', dataL1Port));
 
       index++;
-      this.log('');
     }
 
-    // Suppress unused import warnings
-    void info;
-    void detail;
-    void logSuccess;
+    // Print summary table (section 2.5)
+    logger.section('Summary');
+    logger.table(['Node', 'Status', 'Layer', 'Port'], tableRows);
+  }
+
+  private printLayerInfo(layerName: string, url: string, nodeInfo: NodeInfo | null): void {
+    logger.info(layerName);
+    logger.info(`URL: ${url}`);
+    if (!nodeInfo) {
+      logger.warn('Could not fetch node info');
+    } else {
+      logger.info(`State: ${nodeInfo.state}`);
+      logger.info(`Host: ${nodeInfo.host}`);
+      logger.info(`Public port: ${nodeInfo.publicPort}`);
+      logger.info(`P2P port: ${nodeInfo.p2pPort}`);
+      logger.info(`Peer ID: ${nodeInfo.id}`);
+    }
   }
 }

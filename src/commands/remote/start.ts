@@ -3,47 +3,19 @@
  *
  * Bash equivalent: remote-start() / remote_start() alias
  *                  → remote_start_metagraph() in scripts/hydra-operations/remote-start.sh
- *
- * Ansible variable injection (exact match of bash -e flags):
- *   -e force_genesis=true|false
- *   -e force_owner_message=true|false
- *   -e force_staking_message=true|false
- *   -e owner_p12_file_name=<name>
- *   -e owner_p12_alias=<alias>
- *   -e owner_p12_password=<password>
- *   -e second_signer_p12_file_name_owner=<name>
- *   -e second_signer_p12_alias_owner=<alias>
- *   -e second_signer_p12_password_owner=<password>
- *   -e staking_p12_file_name=<name>
- *   -e staking_p12_alias=<alias>
- *   -e staking_p12_password=<password>
- *   -e second_signer_p12_file_name_staking=<name>
- *   -e second_signer_p12_alias_staking=<alias>
- *   -e second_signer_p12_password_staking=<password>
- *   -e jvm_min_heap=<value>
- *   -e jvm_max_heap=<value>
- *   -e jvm_metaspace_size=<value>
- *   -e jvm_max_metaspace_size=<value>
- *   -e jvm_additional_opts=<value>
- *
- * Environment variables passed to ansible (via lookup('env', ...)):
- *   NODES                       = JSON.stringify(config.nodes)
- *   DEPLOY_NETWORK_NAME         = config.deploy.network.name
- *   DEPLOY_NETWORK_HOST_IP      = config.deploy.network.gl0_node.ip
- *   DEPLOY_NETWORK_HOST_PUBLIC_PORT = config.deploy.network.gl0_node.public_port
- *   DEPLOY_NETWORK_HOST_ID      = config.deploy.network.gl0_node.id
  */
 import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, REMOTE_DEPS } from '../../utils/dependencies.js';
-import { header, info, success } from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 import {
   runPlaybook,
   checkNodesHostFile,
   getSecondSignerInfo,
 } from '../../utils/ansible.js';
-import { confirmDestructive } from '../../utils/prompt.js';
+import { confirmForceGenesis } from '../../utils/prompt.js';
 
 export default class Start extends Command {
   static override id = 'remote:start';
@@ -85,17 +57,17 @@ export default class Start extends Command {
   async run(): Promise<void> {
     const { flags } = await this.parse(Start);
 
-    header('REMOTE START');
+    logger.section('REMOTE START');
 
     // Load config and derive paths
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote start\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     // Check required tools
     requireDependencies(REMOTE_DEPS);
@@ -104,23 +76,14 @@ export default class Start extends Command {
     const ownerFile = config.snapshot_fees.owner.key_file.name;
     const stakingFile = config.snapshot_fees.staking.key_file.name;
     if (ownerFile === stakingFile) {
-      this.error(
-        'Owner and staking p12 files must be different. ' +
-          `Both are currently set to "${ownerFile}". ` +
-          'Update snapshot_fees in euclid.json.'
+      logger.error(
+        `✖  Command failed: remote start\n   Reason: Owner and staking p12 files must be different. Both are currently "${ownerFile}"\n   Fix:    Update snapshot_fees in euclid.json`
       );
     }
 
     // Confirm force-genesis
     if (flags['force-genesis']) {
-      const confirmed = await confirmDestructive(
-        'WARNING: --force-genesis will wipe all remote node state and data. ' +
-          'All existing snapshots will be lost. Are you sure you want to proceed?'
-      );
-      if (!confirmed) {
-        this.log('Aborted.');
-        return;
-      }
+      if (!(await confirmForceGenesis())) return;
     }
 
     // Validate owner params when force_owner_message set (matches bash check)
@@ -128,9 +91,8 @@ export default class Start extends Command {
     const ownerPassword = config.snapshot_fees.owner.key_file.password;
     if (flags['force-owner-message']) {
       if (!ownerFile || !ownerAlias || !ownerPassword) {
-        this.error(
-          'When --force-owner-message is set, snapshot_fees.owner must have ' +
-            'key_file.name, key_file.alias, and key_file.password set in euclid.json.'
+        logger.error(
+          '✖  Command failed: remote start\n   Reason: --force-owner-message requires key_file.name, alias, and password set in snapshot_fees.owner\n   Fix:    Update snapshot_fees.owner in euclid.json'
         );
       }
     }
@@ -140,9 +102,8 @@ export default class Start extends Command {
     const stakingPassword = config.snapshot_fees.staking.key_file.password;
     if (flags['force-staking-message']) {
       if (!stakingFile || !stakingAlias || !stakingPassword) {
-        this.error(
-          'When --force-staking-message is set, snapshot_fees.staking must have ' +
-            'key_file.name, key_file.alias, and key_file.password set in euclid.json.'
+        logger.error(
+          '✖  Command failed: remote start\n   Reason: --force-staking-message requires key_file.name, alias, and password set in snapshot_fees.staking\n   Fix:    Update snapshot_fees.staking in euclid.json'
         );
       }
     }
@@ -154,10 +115,9 @@ export default class Start extends Command {
     // Validate remote hosts
     await checkNodesHostFile(hostsFile);
 
-    info('Starting on remote hosts');
-    this.log('');
+    logger.step('Starting on remote hosts...');
 
-    // Compute second signer info (matches get_additonal_file_info_to_sign_message())
+    // Compute second signer info
     const ownerSecondSigner = getSecondSignerInfo(config.nodes, ownerFile);
     const stakingSecondSigner = getSecondSignerInfo(config.nodes, stakingFile);
 
@@ -186,17 +146,25 @@ export default class Start extends Command {
     };
 
     // Env vars for ansible lookup('env', ...) in playbook
-    // The start playbook uses these to connect to the GL0 network peer
     const ansibleEnv: NodeJS.ProcessEnv = {
       NODES: JSON.stringify(config.nodes),
-      DEPLOY_NETWORK_NAME: config.deploy.network.name,
-      DEPLOY_NETWORK_HOST_IP: String(config.deploy.network.gl0_node.ip),
-      DEPLOY_NETWORK_HOST_PUBLIC_PORT: String(config.deploy.network.gl0_node.public_port),
-      DEPLOY_NETWORK_HOST_ID: String(config.deploy.network.gl0_node.id),
+      DEPLOY_NETWORK_NAME: config.deploy.network,
+      DEPLOY_NETWORK_HOST_IP: String(config.deploy.gl0Node.ip),
+      DEPLOY_NETWORK_HOST_PUBLIC_PORT: String(config.deploy.gl0Node.publicPort),
+      DEPLOY_NETWORK_HOST_ID: String(config.deploy.gl0Node.id),
     };
 
-    await runPlaybook(startPlaybook, extraVars, hostsFile, ansibleEnv);
+    const spinner = logger.spin('Running Ansible start playbook...');
+    try {
+      await runPlaybook(startPlaybook, extraVars, hostsFile, ansibleEnv);
+      spinner.succeed('Remote start completed');
+    } catch (err) {
+      spinner.fail('Remote start failed');
+      logger.error(
+        `✖  Command failed: remote start\n   Reason: Ansible playbook failed — ${(err as Error).message}\n   Fix:    Check Ansible output above and verify SSH keys are loaded`
+      );
+    }
 
-    success('Remote start completed successfully.');
+    logger.success('Remote start completed successfully.');
   }
 }

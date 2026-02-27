@@ -20,9 +20,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger, printMetagraphInfo } from '../../utils/logger.js';
+import { confirmYN } from '../../utils/prompt.js';
 import {
   buildAnsiblePaths,
   checkP12Files,
@@ -55,10 +57,10 @@ export default class StartGenesis extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -70,17 +72,21 @@ export default class StartGenesis extends Command {
     // ----------------------------------------------------------------
     // 3. Pre-start validations (matches start_containers() in bash)
     // ----------------------------------------------------------------
-    logger.header('################################## START (GENESIS) ##################################');
+    logger.section('START (GENESIS)');
+
+    if (!(await confirmYN('⚠  This will erase all local chain history. Continue?'))) {
+      return;
+    }
 
     // At least 3 nodes required
     if (config.nodes.length < 3) {
-      this.error(`At least 3 nodes are required. Found: ${config.nodes.length}`);
+      logger.error(`At least 3 nodes are required. Found: ${config.nodes.length}`);
     }
 
     // All node p12 files must exist
     const missingP12 = checkP12Files(sourcePath, config.nodes);
     if (missingP12.length > 0) {
-      this.error(
+      logger.error(
         `Missing p12 files in source/p12-files/:\n  ${missingP12.join('\n  ')}`
       );
     }
@@ -96,9 +102,9 @@ export default class StartGenesis extends Command {
     };
 
     // Network host info from config (may be placeholder values for local — that's OK)
-    const networkHostIp = config.deploy.network.gl0_node.ip;
-    const networkHostId = config.deploy.network.gl0_node.id;
-    const networkHostPublicPort = String(config.deploy.network.gl0_node.public_port);
+    const networkHostIp = config.deploy.gl0Node.ip;
+    const networkHostId = config.deploy.gl0Node.id;
+    const networkHostPublicPort = String(config.deploy.gl0Node.publicPort);
 
     const layers = config.layers;
     const forceGenesis = 'true';
@@ -154,13 +160,16 @@ export default class StartGenesis extends Command {
       );
 
       // Poll genesis.address file until metagraph_id is available
-      logger.info('Waiting for metagraph genesis.address...');
+      const idSpinner = logger.spin('Waiting for metagraph genesis.address...');
       try {
         const metagraphId = await pollMetagraphId(sourcePath, rootPath);
-        logger.urlLine('METAGRAPH_ID:', metagraphId);
-        logger.detail('Filling the euclid.json file');
+        idSpinner.succeed(`Metagraph ID: ${metagraphId}`);
+        logger.info('Filling the euclid.json file');
       } catch (err) {
-        this.error(`Failed to get metagraph ID: ${(err as Error).message}`);
+        idSpinner.fail('Failed to get metagraph ID');
+        logger.error(
+          `✖  Command failed: local start-genesis\n   Reason: ${(err as Error).message}\n   Fix:    Check metagraph-l0 logs with: hydra logs metagraph-node-1 metagraph-l0`
+        );
       }
     }
 
@@ -191,7 +200,7 @@ export default class StartGenesis extends Command {
     // ----------------------------------------------------------------
     // 11. Start Grafana (if configured)
     // ----------------------------------------------------------------
-    if (config.docker.start_grafana_container) {
+    if (config.monitoring?.grafana.enabled) {
       await this.tryStartLayer(
         'Grafana',
         ansible.grafanaStart,
@@ -201,10 +210,10 @@ export default class StartGenesis extends Command {
     }
 
     // ----------------------------------------------------------------
-    // 12. Print all node URLs
+    // 12. Print metagraph info panel (boxen)
     // ----------------------------------------------------------------
     // Reload config to pick up metagraph_id written by pollMetagraphId
-    const updatedConfig = loadConfig(configFilePath);
+    const updatedConfig = loadAndValidateConfig(configFilePath!);
     const genesisAddressFile = path.join(
       sourcePath, 'metagraph-l0', 'genesis', 'genesis.address'
     );
@@ -212,7 +221,7 @@ export default class StartGenesis extends Command {
       ? fs.readFileSync(genesisAddressFile, 'utf-8').trim()
       : (updatedConfig.metagraph_id ?? '(not available)');
 
-    logger.printMetagraphInfo(updatedConfig, { metagraphId });
+    printMetagraphInfo(updatedConfig, { metagraphId });
   }
 
   // ------------------------------------------------------------------
@@ -225,20 +234,16 @@ export default class StartGenesis extends Command {
     extraVars: Record<string, string>,
     env: NodeJS.ProcessEnv
   ): Promise<void> {
-    logger.detail('');
-    logger.detail('');
-    logger.header();
-    logger.info(`Starting ${layerName}...`);
-    logger.detail('');
+    const spinner = logger.spin(`Starting ${layerName}...`);
 
     try {
       await runAnsible(playbookPath, extraVars, env);
-      logger.success(`${layerName} started successfully`);
+      spinner.succeed(`${layerName} started`);
     } catch {
-      logger.error(`Failed when starting ${layerName}, take a look at the logs.`);
-      this.exit(1);
+      spinner.fail(`Failed to start ${layerName}`);
+      logger.error(
+        `✖  Command failed: local start-genesis\n   Reason: Ansible playbook failed for ${layerName}\n   Fix:    Check the Ansible output above and container logs`
+      );
     }
-
-    logger.header();
   }
 }

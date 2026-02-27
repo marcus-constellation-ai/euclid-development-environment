@@ -22,8 +22,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, success, info } from '../../utils/logger.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger } from '../../utils/logger.js';
 import { runPlaybook, checkMonitoringHostFile } from '../../utils/ansible.js';
 
 /** Required fields in the monitoring service config.json */
@@ -54,15 +55,8 @@ const REQUIRED_CONFIG_FIELDS = [
 
 /**
  * Resolve a dot-path like ".metagraph.nodes[0].ip" into a value from a JSON object.
- * Matches the jq field-path resolution used in check_if_config_json_is_valid().
- *
- * Supported path forms:
- *   ".field"             → simple key access
- *   ".field.nested"      → nested key access
- *   ".field[N].nested"   → array index + nested key
  */
 function resolveJsonPath(obj: unknown, dotPath: string): unknown {
-  // Split on dots, keeping bracket notation (e.g. "nodes[0]") intact as one token
   const parts = dotPath.replace(/^\./u, '').split('.');
 
   let current: unknown = obj;
@@ -84,7 +78,6 @@ function resolveJsonPath(obj: unknown, dotPath: string): unknown {
 
 /**
  * Validate that all required fields in config.json are non-empty.
- * Matches check_if_config_json_is_valid() in remote-deploy-monitoring-service.sh.
  */
 function validateMonitoringConfig(
   configJson: unknown,
@@ -110,7 +103,6 @@ function validateMonitoringConfig(
 
 /**
  * Validate that all privateKeyPath files referenced in config.json exist on disk.
- * Matches check_private_key_paths() in remote-deploy-monitoring-service.sh.
  */
 function validatePrivateKeyPaths(
   configJson: Record<string, unknown>,
@@ -161,16 +153,16 @@ export default class DeployMonitoringService extends Command {
   ];
 
   async run(): Promise<void> {
-    header('REMOTE DEPLOY MONITORING SERVICE');
+    logger.section('REMOTE DEPLOY MONITORING SERVICE');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote deploy-monitoring-service\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const sourcePath = path.join(rootPath, 'source');
     const hostsFile = path.resolve(rootPath, config.deploy.ansible.hosts);
@@ -187,26 +179,35 @@ export default class DeployMonitoringService extends Command {
     const configJsonPath = path.join(monitoringServiceDir, 'config', 'config.json');
 
     if (!fs.existsSync(configJsonPath)) {
-      this.error(
-        `config.json not found at ${configJsonPath}\n` +
-          'Run "hydra install-monitoring-service" first, then fill in config.json.'
+      logger.error(
+        `✖  Command failed: remote deploy-monitoring-service\n   Reason: config.json not found at ${configJsonPath}\n   Fix:    Run "hydra install-monitoring-service" first, then fill in config.json`
       );
     }
 
     const configJson = JSON.parse(fs.readFileSync(configJsonPath, 'utf-8')) as Record<string, unknown>;
 
-    validateMonitoringConfig(configJson, configJsonPath);
-    validatePrivateKeyPaths(configJson, monitoringServiceDir);
+    try {
+      validateMonitoringConfig(configJson, configJsonPath);
+      validatePrivateKeyPaths(configJson, monitoringServiceDir);
+    } catch (err) {
+      logger.error(
+        `✖  Command failed: remote deploy-monitoring-service\n   Reason: ${(err as Error).message}\n   Fix:    Edit config.json at ${configJsonPath}`
+      );
+    }
 
-    info('Deploying monitoring service on remote host...');
-    this.log('');
+    const spinner = logger.spin('Deploying monitoring service on remote host...');
+    try {
+      await runPlaybook(deployPlaybook, {}, hostsFile, {
+        SOURCE_PATH: sourcePath,
+      });
+      spinner.succeed('Monitoring service deployed');
+    } catch (err) {
+      spinner.fail('Monitoring service deploy failed');
+      logger.error(
+        `✖  Command failed: remote deploy-monitoring-service\n   Reason: Ansible playbook failed — ${(err as Error).message}\n   Fix:    Check Ansible output above and verify SSH keys are loaded`
+      );
+    }
 
-    // Run ansible deploy playbook (matches bash: ansible-playbook -i $HOSTS_FILE $DEPLOY_PLAYBOOK)
-    // ANSIBLE_DEPRECATION_WARNINGS=False is included in ANSIBLE_QUIET_ENV in runPlaybook
-    await runPlaybook(deployPlaybook, {}, hostsFile, {
-      SOURCE_PATH: sourcePath,
-    });
-
-    success('Monitoring service deployed successfully.');
+    logger.success('Monitoring service deployed successfully.');
   }
 }

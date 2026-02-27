@@ -5,6 +5,7 @@ import {
   LayerEnum,
   FrameworkSchema,
   NodeSchema,
+  P12FileEntrySchema,
   validateOwnerStakingDiff,
   validateNetworkName,
   findPlaceholders,
@@ -12,13 +13,15 @@ import {
 } from '../../../src/config/schema.js';
 
 // ---------------------------------------------------------------------------
-// Shared fixture
+// Shared fixture — new camelCase structure
 // ---------------------------------------------------------------------------
 const BASE_CONFIG = {
   version: '0.19.0',
   tessellation_version: '4.0.0-rc.0',
   ref_type: 'tag',
-  project_name: 'my-project',
+  projectName: 'my-project',
+  githubToken: '',
+  tessellation: { version: 'latest' },
   framework: { name: 'currency', modules: ['data'], version: 'v3.6.0', ref_type: 'tag' },
   layers: ['global-l0', 'metagraph-l0', 'currency-l1'],
   nodes: [
@@ -26,16 +29,22 @@ const BASE_CONFIG = {
     { name: 'node-2', key_file: { name: 'key2.p12', alias: 'key2', password: 'pass' } },
     { name: 'node-3', key_file: { name: 'key3.p12', alias: 'key3', password: 'pass' } },
   ],
-  docker: { start_grafana_container: false },
+  p12Files: [
+    { fileName: 'key1.p12', keyAlias: 'key1', password: 'pass' },
+    { fileName: 'key2.p12', keyAlias: 'key2', password: 'pass' },
+    { fileName: 'key3.p12', keyAlias: 'key3', password: 'pass' },
+  ],
+  monitoring: {
+    grafana: { enabled: false },
+    prometheus: { enabled: false },
+  },
   snapshot_fees: {
     owner: { key_file: { name: 'owner.p12', alias: 'owner', password: 'pass' } },
     staking: { key_file: { name: 'staking.p12', alias: 'staking', password: 'pass' } },
   },
   deploy: {
-    network: {
-      name: 'integrationnet',
-      gl0_node: { ip: '1.2.3.4', id: 'abc123', public_port: 9000 },
-    },
+    network: 'integrationnet',
+    gl0Node: { ip: '1.2.3.4', id: 'abc123', publicPort: 9000 },
     jvm: {
       min_heap: '1g',
       max_heap: '2g',
@@ -105,18 +114,16 @@ describe('EuclidConfigSchema', () => {
     expect(EuclidConfigSchema.safeParse(BASE_CONFIG).success).toBe(true);
   });
 
-  it('accepts placeholder strings for gl0_node fields (template compatibility)', () => {
+  it('accepts placeholder strings for gl0Node fields (template compatibility)', () => {
     const withPlaceholders = {
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet|mainnet',
-          gl0_node: {
-            ip: ':gl0_node_ip',
-            id: ':gl0_node_id',
-            public_port: ':gl0_node_public_port',
-          },
+        network: 'integrationnet|mainnet',
+        gl0Node: {
+          ip: ':gl0_node_ip',
+          id: ':gl0_node_id',
+          publicPort: ':gl0_node_public_port',
         },
       },
     };
@@ -137,6 +144,12 @@ describe('EuclidConfigSchema', () => {
 
   it('allows "branch" as a valid ref_type', () => {
     const result = EuclidConfigSchema.safeParse({ ...BASE_CONFIG, ref_type: 'branch' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts config without optional p12Files and monitoring fields', () => {
+    const { p12Files, monitoring, tessellation, githubToken, ...minimal } = BASE_CONFIG;
+    const result = EuclidConfigSchema.safeParse(minimal);
     expect(result.success).toBe(true);
   });
 });
@@ -194,6 +207,41 @@ describe('KeyFileSchema', () => {
   it('allows empty password (users may have no password)', () => {
     expect(
       KeyFileSchema.safeParse({ name: 'key.p12', alias: 'key', password: '' }).success,
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P12FileEntrySchema (new camelCase standalone entry)
+// ---------------------------------------------------------------------------
+describe('P12FileEntrySchema', () => {
+  it('parses a valid p12 file entry', () => {
+    const result = P12FileEntrySchema.safeParse({
+      fileName: 'token-key.p12',
+      keyAlias: 'token-key',
+      password: 'secret',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('fails when fileName is empty', () => {
+    expect(
+      P12FileEntrySchema.safeParse({ fileName: '', keyAlias: 'token-key', password: 'pass' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('fails when keyAlias is empty', () => {
+    expect(
+      P12FileEntrySchema.safeParse({ fileName: 'key.p12', keyAlias: '', password: 'pass' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('allows empty password', () => {
+    expect(
+      P12FileEntrySchema.safeParse({ fileName: 'key.p12', keyAlias: 'key', password: '' })
+        .success,
     ).toBe(true);
   });
 });
@@ -303,10 +351,7 @@ describe('validateNetworkName', () => {
   it('returns null for "mainnet"', () => {
     const config = EuclidConfigSchema.parse({
       ...BASE_CONFIG,
-      deploy: {
-        ...BASE_CONFIG.deploy,
-        network: { ...BASE_CONFIG.deploy.network, name: 'mainnet' },
-      },
+      deploy: { ...BASE_CONFIG.deploy, network: 'mainnet' },
     });
     expect(validateNetworkName(config)).toBeNull();
   });
@@ -314,10 +359,7 @@ describe('validateNetworkName', () => {
   it('returns null for "testnet"', () => {
     const config = EuclidConfigSchema.parse({
       ...BASE_CONFIG,
-      deploy: {
-        ...BASE_CONFIG.deploy,
-        network: { ...BASE_CONFIG.deploy.network, name: 'testnet' },
-      },
+      deploy: { ...BASE_CONFIG.deploy, network: 'testnet' },
     });
     expect(validateNetworkName(config)).toBeNull();
   });
@@ -325,10 +367,7 @@ describe('validateNetworkName', () => {
   it('returns an error message for an unknown network name', () => {
     const config = EuclidConfigSchema.parse({
       ...BASE_CONFIG,
-      deploy: {
-        ...BASE_CONFIG.deploy,
-        network: { ...BASE_CONFIG.deploy.network, name: 'wrongnet' },
-      },
+      deploy: { ...BASE_CONFIG.deploy, network: 'wrongnet' },
     });
     const result = validateNetworkName(config);
     expect(result).not.toBeNull();
@@ -338,10 +377,7 @@ describe('validateNetworkName', () => {
   it('returns an error for the pipe-separated template placeholder value', () => {
     const config = EuclidConfigSchema.parse({
       ...BASE_CONFIG,
-      deploy: {
-        ...BASE_CONFIG.deploy,
-        network: { ...BASE_CONFIG.deploy.network, name: 'integrationnet|mainnet' },
-      },
+      deploy: { ...BASE_CONFIG.deploy, network: 'integrationnet|mainnet' },
     });
     const result = validateNetworkName(config);
     expect(result).not.toBeNull();
@@ -362,13 +398,10 @@ describe('findPlaceholders', () => {
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet',
-          gl0_node: { ip: ':gl0_node_ip', id: 'real-id', public_port: 9000 },
-        },
+        gl0Node: { ip: ':gl0_node_ip', id: 'real-id', publicPort: 9000 },
       },
     });
-    expect(findPlaceholders(config)).toContain('deploy.network.gl0_node.ip');
+    expect(findPlaceholders(config)).toContain('deploy.gl0Node.ip');
   });
 
   it('detects placeholder node ID', () => {
@@ -376,27 +409,21 @@ describe('findPlaceholders', () => {
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet',
-          gl0_node: { ip: '1.2.3.4', id: ':gl0_node_id', public_port: 9000 },
-        },
+        gl0Node: { ip: '1.2.3.4', id: ':gl0_node_id', publicPort: 9000 },
       },
     });
-    expect(findPlaceholders(config)).toContain('deploy.network.gl0_node.id');
+    expect(findPlaceholders(config)).toContain('deploy.gl0Node.id');
   });
 
-  it('detects placeholder public_port string', () => {
+  it('detects placeholder publicPort string', () => {
     const config = EuclidConfigSchema.parse({
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet',
-          gl0_node: { ip: '1.2.3.4', id: 'real-id', public_port: ':gl0_node_public_port' },
-        },
+        gl0Node: { ip: '1.2.3.4', id: 'real-id', publicPort: ':gl0_node_public_port' },
       },
     });
-    expect(findPlaceholders(config)).toContain('deploy.network.gl0_node.public_port');
+    expect(findPlaceholders(config)).toContain('deploy.gl0Node.publicPort');
   });
 
   it('detects pipe-separated network name placeholder', () => {
@@ -404,13 +431,11 @@ describe('findPlaceholders', () => {
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet|mainnet',
-          gl0_node: { ip: '1.2.3.4', id: 'real-id', public_port: 9000 },
-        },
+        network: 'integrationnet|mainnet',
+        gl0Node: { ip: '1.2.3.4', id: 'real-id', publicPort: 9000 },
       },
     });
-    expect(findPlaceholders(config)).toContain('deploy.network.name');
+    expect(findPlaceholders(config)).toContain('deploy.network');
   });
 
   it('reports all four placeholders simultaneously', () => {
@@ -418,22 +443,20 @@ describe('findPlaceholders', () => {
       ...BASE_CONFIG,
       deploy: {
         ...BASE_CONFIG.deploy,
-        network: {
-          name: 'integrationnet|mainnet',
-          gl0_node: {
-            ip: ':gl0_node_ip',
-            id: ':gl0_node_id',
-            public_port: ':gl0_node_public_port',
-          },
+        network: 'integrationnet|mainnet',
+        gl0Node: {
+          ip: ':gl0_node_ip',
+          id: ':gl0_node_id',
+          publicPort: ':gl0_node_public_port',
         },
       },
     });
     const placeholders = findPlaceholders(config);
     expect(placeholders).toHaveLength(4);
-    expect(placeholders).toContain('deploy.network.name');
-    expect(placeholders).toContain('deploy.network.gl0_node.ip');
-    expect(placeholders).toContain('deploy.network.gl0_node.id');
-    expect(placeholders).toContain('deploy.network.gl0_node.public_port');
+    expect(placeholders).toContain('deploy.network');
+    expect(placeholders).toContain('deploy.gl0Node.ip');
+    expect(placeholders).toContain('deploy.gl0Node.id');
+    expect(placeholders).toContain('deploy.gl0Node.publicPort');
   });
 });
 

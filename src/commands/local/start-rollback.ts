@@ -13,9 +13,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger, printMetagraphInfo } from '../../utils/logger.js';
 import {
   buildAnsiblePaths,
   checkP12Files,
@@ -47,10 +48,10 @@ export default class StartRollback extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -62,15 +63,15 @@ export default class StartRollback extends Command {
     // ----------------------------------------------------------------
     // 3. Pre-start validations
     // ----------------------------------------------------------------
-    logger.header('################################## START (ROLLBACK) ##################################');
+    logger.section('START (ROLLBACK)');
 
     if (config.nodes.length < 3) {
-      this.error(`At least 3 nodes are required. Found: ${config.nodes.length}`);
+      logger.error(`At least 3 nodes are required. Found: ${config.nodes.length}`);
     }
 
     const missingP12 = checkP12Files(sourcePath, config.nodes);
     if (missingP12.length > 0) {
-      this.error(
+      logger.error(
         `Missing p12 files in source/p12-files/:\n  ${missingP12.join('\n  ')}`
       );
     }
@@ -85,9 +86,9 @@ export default class StartRollback extends Command {
       INFRA_PATH: infraPath,
     };
 
-    const networkHostIp = config.deploy.network.gl0_node.ip;
-    const networkHostId = config.deploy.network.gl0_node.id;
-    const networkHostPublicPort = String(config.deploy.network.gl0_node.public_port);
+    const networkHostIp = config.deploy.gl0Node.ip;
+    const networkHostId = config.deploy.gl0Node.id;
+    const networkHostPublicPort = String(config.deploy.gl0Node.publicPort);
 
     const layers = config.layers;
     const forceGenesis = 'false'; // rollback = do not run genesis
@@ -170,7 +171,7 @@ export default class StartRollback extends Command {
     // ----------------------------------------------------------------
     // 11. Start Grafana (if configured)
     // ----------------------------------------------------------------
-    if (config.docker.start_grafana_container) {
+    if (config.monitoring?.grafana.enabled) {
       await this.tryStartLayer(
         'Grafana',
         ansible.grafanaStart,
@@ -180,7 +181,7 @@ export default class StartRollback extends Command {
     }
 
     // ----------------------------------------------------------------
-    // 12. Print all node URLs (use metagraph_id from config if present)
+    // 12. Print metagraph info panel (boxen)
     // ----------------------------------------------------------------
     const genesisAddressFile = path.join(
       sourcePath, 'metagraph-l0', 'genesis', 'genesis.address'
@@ -189,7 +190,7 @@ export default class StartRollback extends Command {
       ? fs.readFileSync(genesisAddressFile, 'utf-8').trim()
       : (config.metagraph_id ?? '(not available)');
 
-    logger.printMetagraphInfo(config, { metagraphId });
+    printMetagraphInfo(config, { metagraphId });
   }
 
   // ------------------------------------------------------------------
@@ -202,20 +203,16 @@ export default class StartRollback extends Command {
     extraVars: Record<string, string>,
     env: NodeJS.ProcessEnv
   ): Promise<void> {
-    logger.detail('');
-    logger.detail('');
-    logger.header();
-    logger.info(`Starting ${layerName}...`);
-    logger.detail('');
+    const spinner = logger.spin(`Starting ${layerName}...`);
 
     try {
       await runAnsible(playbookPath, extraVars, env);
-      logger.success(`${layerName} started successfully`);
+      spinner.succeed(`${layerName} started`);
     } catch {
-      logger.error(`Failed when starting ${layerName}, take a look at the logs.`);
-      this.exit(1);
+      spinner.fail(`Failed to start ${layerName}`);
+      logger.error(
+        `✖  Command failed: local start-rollback\n   Reason: Ansible playbook failed for ${layerName}\n   Fix:    Check the Ansible output above and container logs`
+      );
     }
-
-    logger.header();
   }
 }

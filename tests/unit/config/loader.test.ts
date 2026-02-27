@@ -10,13 +10,13 @@ import {
 } from '../../../src/config/loader.js';
 
 // ---------------------------------------------------------------------------
-// Minimal valid euclid.json config fixture
+// Minimal valid euclid.json config fixture — new camelCase structure
 // ---------------------------------------------------------------------------
 const VALID_CONFIG = {
   version: '0.19.0',
   tessellation_version: '4.0.0-rc.0',
   ref_type: 'tag',
-  project_name: 'my-project',
+  projectName: 'my-project',
   framework: { name: 'currency', modules: ['data'], version: 'v3.6.0', ref_type: 'tag' },
   layers: ['global-l0', 'metagraph-l0', 'currency-l1'],
   nodes: [
@@ -24,16 +24,17 @@ const VALID_CONFIG = {
     { name: 'node-2', key_file: { name: 'key2.p12', alias: 'key2', password: 'pass' } },
     { name: 'node-3', key_file: { name: 'key3.p12', alias: 'key3', password: 'pass' } },
   ],
-  docker: { start_grafana_container: false },
+  monitoring: {
+    grafana: { enabled: false },
+    prometheus: { enabled: false },
+  },
   snapshot_fees: {
     owner: { key_file: { name: 'owner.p12', alias: 'owner', password: 'pass' } },
     staking: { key_file: { name: 'staking.p12', alias: 'staking', password: 'pass' } },
   },
   deploy: {
-    network: {
-      name: 'integrationnet',
-      gl0_node: { ip: '1.2.3.4', id: 'abc123', public_port: 9000 },
-    },
+    network: 'integrationnet',
+    gl0Node: { ip: '1.2.3.4', id: 'abc123', publicPort: 9000 },
     jvm: {
       min_heap: '1g',
       max_heap: '2g',
@@ -125,7 +126,7 @@ describe('loadConfig (success)', () => {
     writeFileSync(configPath, JSON.stringify(VALID_CONFIG));
 
     const config = loadConfig(tmpDir);
-    expect(config.project_name).toBe('my-project');
+    expect(config.projectName).toBe('my-project');
   });
 
   it('preserves all nested config fields correctly', () => {
@@ -133,7 +134,8 @@ describe('loadConfig (success)', () => {
     writeFileSync(configPath, JSON.stringify(VALID_CONFIG));
 
     const config = loadConfig(configPath);
-    expect(config.deploy.network.name).toBe('integrationnet');
+    expect(config.deploy.network).toBe('integrationnet');
+    expect(config.deploy.gl0Node.ip).toBe('1.2.3.4');
     expect(config.deploy.jvm.min_heap).toBe('1g');
     expect(config.snapshot_fees.owner.key_file.name).toBe('owner.p12');
     expect(config.snapshot_fees.staking.key_file.name).toBe('staking.p12');
@@ -211,7 +213,7 @@ describe('loadConfig (errors)', () => {
       version: '0.19.0',
       tessellation_version: '4.0.0-rc.0',
       ref_type: 'tag',
-      project_name: 'proj',
+      projectName: 'proj',
     };
     writeFileSync(configPath, JSON.stringify(partial));
 

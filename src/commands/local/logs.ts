@@ -3,7 +3,7 @@
  *
  * Bash equivalent: logs() in scripts/hydra → logs_containers() in scripts/hydra-operations/logs.sh
  *
- * Runs `docker exec -it {containerName} bash -c "cd {layer} && tail -f {layer}.log -n {n}"`
+ * Runs `docker exec {containerName} bash -c "cd {layer} && tail -f {layer}.log -n {n}"`
  * inside the specified container.
  *
  * Log files live at /{layer}/{layer}.log inside the container.
@@ -11,15 +11,25 @@
  *
  * External dependencies: docker (≥26.0.0)
  */
+import * as readline from 'node:readline';
 import { Args, Command, Flags } from '@oclif/core';
 import { execa } from 'execa';
+import chalk from 'chalk';
 
 import { findConfigFile } from '../../config/loader.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 
 const VALID_LAYERS = ['global-l0', 'dag-l1', 'metagraph-l0', 'currency-l1', 'data-l1'] as const;
 type ValidLayer = (typeof VALID_LAYERS)[number];
+
+/** Color-code a single log line based on its content */
+function colorize(line: string): string {
+  if (line.includes('ERROR')) return chalk.red(line);
+  if (line.includes('WARN')) return chalk.yellow(line);
+  if (line.includes('DEBUG')) return chalk.gray(line);
+  return chalk.white(line); // INFO or default
+}
 
 export default class Logs extends Command {
   static override id = 'local:logs'
@@ -61,7 +71,7 @@ export default class Logs extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
 
     requireDependencies(LOCAL_DEPS);
@@ -69,13 +79,13 @@ export default class Logs extends Command {
     // ----------------------------------------------------------------
     // 2. Validate layer name
     // ----------------------------------------------------------------
-    logger.header('################################## LOGS ##################################');
-    logger.info('NOTE: TO STOP LOGGING PRESS CTRL + C');
-    logger.detail('');
+    logger.section('LOGS');
 
     if (!VALID_LAYERS.includes(args.layer as ValidLayer)) {
-      logger.error(`Invalid layer "${args.layer}". Valid layers: ${VALID_LAYERS.join(', ')}`);
-      this.exit(1);
+      logger.error(
+        `Invalid layer "${args.layer}"\n` +
+          `   Valid layers are: ${VALID_LAYERS.join(', ')}`
+      );
     }
     const layer = args.layer as ValidLayer;
 
@@ -89,8 +99,10 @@ export default class Logs extends Command {
 
     const runningContainers = (containerCheck.stdout ?? '').split('\n').map((s) => s.trim());
     if (!runningContainers.includes(args.container_name)) {
-      logger.error(`Container ${args.container_name} is not running.`);
-      this.exit(1);
+      logger.error(
+        `Container "${args.container_name}" is not running\n` +
+          `   Start containers with: hydra local start-genesis`
+      );
     }
 
     // ----------------------------------------------------------------
@@ -101,8 +113,10 @@ export default class Logs extends Command {
       { reject: false, env: process.env }
     );
     if (dirCheck.exitCode !== 0) {
-      logger.error(`Layer ${layer} does not exist in ${args.container_name}`);
-      this.exit(1);
+      logger.error(
+        `Layer "${layer}" directory does not exist in container ${args.container_name}\n` +
+          `   Ensure the layer was started successfully`
+      );
     }
 
     // ----------------------------------------------------------------
@@ -114,30 +128,55 @@ export default class Logs extends Command {
       { reject: false, env: process.env }
     );
     if (fileCheck.exitCode !== 0) {
-      logger.error(`Layer ${layer} does not exist in ${args.container_name}`);
-      this.exit(1);
+      logger.error(
+        `Log file "${logFile}" not found in container ${args.container_name}\n` +
+          `   Wait for the layer to fully start before tailing logs`
+      );
     }
 
     // ----------------------------------------------------------------
-    // 6. Tail the log file (real-time streaming via -f)
-    // Matches bash: docker exec -it $container_name bash -c "cd $layer && tail -f $layer.log -n $argc_n"
+    // 6. Show streaming header
     // ----------------------------------------------------------------
-    await execa(
+    logger.step(
+      `Streaming logs from ${chalk.bold(args.container_name)} / ${chalk.bold(layer)} (Ctrl+C to stop)`
+    );
+
+    // ----------------------------------------------------------------
+    // 7. Stream with color-coded output and SIGINT handler
+    // ----------------------------------------------------------------
+    const proc = execa(
       'docker',
       [
         'exec',
-        '-it',
         args.container_name,
         'bash',
         '-c',
         `cd ${layer} && tail -f ${layer}.log -n ${flags.n}`,
       ],
       {
-        stdio: 'inherit',
+        stdout: 'pipe',
+        stderr: 'inherit',
         env: process.env,
-        // Reject on non-zero exit only if not SIGINT (Ctrl+C)
         reject: false,
       }
     );
+
+    // Handle Ctrl+C gracefully
+    process.on('SIGINT', () => {
+      process.stdout.write('\n');
+      logger.info('Log stream stopped.');
+      proc.kill('SIGTERM');
+      process.exit(0);
+    });
+
+    // Color-code lines as they stream
+    if (proc.stdout) {
+      const rl = readline.createInterface({ input: proc.stdout, terminal: false });
+      for await (const line of rl) {
+        process.stdout.write(colorize(line) + '\n');
+      }
+    }
+
+    await proc;
   }
 }

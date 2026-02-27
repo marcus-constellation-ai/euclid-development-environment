@@ -2,7 +2,11 @@
   "version": "0.19.0",
   "tessellation_version": "4.0.0-rc.0",
   "ref_type": "tag",
-  "project_name": "custom-project",
+  "projectName": "custom-project",
+  "githubToken": "",
+  "tessellation": {
+    "version": "latest"
+  },
   "framework": {
     "name": "currency",
     "modules": [
@@ -43,9 +47,11 @@
       }
     }
   ],
-  "docker": {
-    "start_grafana_container": false
-  },
+  "p12Files": [
+    { "fileName": "token-key.p12", "keyAlias": "token-key", "password": "password" },
+    { "fileName": "token-key-1.p12", "keyAlias": "token-key-1", "password": "password" },
+    { "fileName": "token-key-2.p12", "keyAlias": "token-key-2", "password": "password" }
+  ],
   "snapshot_fees": {
     "owner": {
       "key_file": {
@@ -62,14 +68,16 @@
       }
     }
   },
+  "monitoring": {
+    "grafana": { "enabled": false },
+    "prometheus": { "enabled": false }
+  },
   "deploy": {
-    "network": {
-      "name": "integrationnet|mainnet",
-      "gl0_node": {
-        "ip": ":gl0_node_ip",
-        "id": ":gl0_node_id",
-        "public_port": ":gl0_node_public_port"
-      }
+    "network": "integrationnet|mainnet",
+    "gl0Node": {
+      "ip": ":gl0_node_ip",
+      "id": ":gl0_node_id",
+      "publicPort": ":gl0_node_public_port"
     },
     "jvm": {
       "min_heap": "1g",
@@ -91,6 +99,11 @@
           "deploy": "infra/ansible/remote/monitoring/playbooks/deploy/deploy.ansible.yml",
           "start": "infra/ansible/remote/monitoring/playbooks/start/start.ansible.yml"
         }
+      },
+      "playbooks": {
+        "deploy": "infra/ansible/playbooks/deploy.ansible.yml",
+        "start": "infra/ansible/playbooks/start.ansible.yml",
+        "monitoring": "infra/ansible/playbooks/monitoring.ansible.yml"
       }
     }
   }

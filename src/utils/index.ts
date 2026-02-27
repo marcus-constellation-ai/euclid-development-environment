@@ -14,22 +14,8 @@
  *   Implement the validation functions (checkDocker, checkAnsible, checkP12Files, etc.)
  */
 
-import chalk from 'chalk'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-// ── Color output helpers (mirrors echo-colors.sh) ────────────────────────────
-
-export const logger = {
-  green: (msg: string) => console.log(chalk.green(msg)),
-  yellow: (msg: string) => console.log(chalk.yellow(msg)),
-  red: (msg: string) => console.error(chalk.red(msg)),
-  white: (msg: string) => console.log(chalk.white(msg)),
-  cyan: (msg: string) => console.log(chalk.cyan(msg)),
-  title: (msg: string) => console.log(chalk.cyan.bold(`\n=== ${msg} ===`)),
-  url: (label: string, url: string) =>
-    console.log(`${chalk.yellow(label)}: ${chalk.white(url)}`),
-}
 
 // ── Path resolution (mirrors build_paths() from hydra) ───────────────────────
 

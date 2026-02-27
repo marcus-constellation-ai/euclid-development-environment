@@ -13,9 +13,10 @@
 import * as path from 'node:path';
 import { Command } from '@oclif/core';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 import { buildAnsiblePaths, runAnsible } from '../../utils/docker.js';
 
 export default class Stop extends Command {
@@ -36,10 +37,10 @@ export default class Stop extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
 
     // ----------------------------------------------------------------
@@ -50,7 +51,7 @@ export default class Stop extends Command {
     // ----------------------------------------------------------------
     // 3. Stop layers (matches stop_containers() order in stop.sh)
     // ----------------------------------------------------------------
-    logger.stopBanner();
+    logger.section('STOP');
 
     const ansible = buildAnsiblePaths(infraPath);
     const nodesJson = JSON.stringify(config.nodes);
@@ -86,7 +87,7 @@ export default class Stop extends Command {
     await this.tryStopLayer('Docker node containers', ansible.containersStop, baseEnv);
 
     // Stop Grafana (if configured)
-    if (config.docker.start_grafana_container) {
+    if (config.monitoring?.grafana.enabled) {
       await this.tryStopLayer('Grafana', ansible.grafanaStop, baseEnv);
     }
   }
@@ -100,20 +101,17 @@ export default class Stop extends Command {
     playbookPath: string,
     env: NodeJS.ProcessEnv
   ): Promise<void> {
-    logger.detail('');
-    logger.detail('');
-    logger.header();
-    logger.info(`Stopping ${layerName}...`);
-    logger.detail('');
+    const spinner = logger.spin(`Stopping ${layerName}...`);
 
     try {
       await runAnsible(playbookPath, {}, env);
-      logger.success(`${layerName} stopped successfully`);
+      spinner.succeed(`${layerName} stopped`);
     } catch {
-      logger.error(`Failed when stopping ${layerName}, take a look at the logs.`);
-      this.exit(1);
+      spinner.fail(`Failed to stop ${layerName}`);
+      // Non-fatal: log warning and continue stopping other layers
+      logger.warn(
+        `Ansible playbook failed for ${layerName}. Check the output above. You may need to manually stop: docker stop <container>`
+      );
     }
-
-    logger.header();
   }
 }

@@ -16,9 +16,10 @@ import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
 import { execa } from 'execa';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, INSTALL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 
 const DEFAULT_REPO = 'https://github.com/Constellation-Labs/metagraph-examples.git';
 const DEFAULT_TEMPLATE_PATH = 'examples';
@@ -125,10 +126,10 @@ export default class InstallTemplate extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    loadConfig(configFilePath); // validate config exists and is parseable
-    const rootPath = path.dirname(configFilePath);
+    loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -140,7 +141,7 @@ export default class InstallTemplate extends Command {
     // ----------------------------------------------------------------
     // 3. Compute repo name from URL (strip .git suffix)
     // ----------------------------------------------------------------
-    logger.header('################################## INSTALL TEMPLATE ##################################');
+    logger.section('INSTALL TEMPLATE');
 
     const repoBasename = path.basename(flags.repo);
     const repoName = repoBasename.endsWith('.git')
@@ -154,18 +155,26 @@ export default class InstallTemplate extends Command {
     // 4. --list mode: clone repo, list templates, print and exit
     // ----------------------------------------------------------------
     if (flags.list) {
-      logger.info('Fetching templates...');
+      const cloneSpinner = logger.spin('Fetching available templates...');
 
       // Clean up any previous clone
       if (fs.existsSync(cloneDir)) {
         fs.rmSync(cloneDir, { recursive: true, force: true });
       }
 
-      await execa('git', ['clone', '--quiet', flags.repo], {
-        stdio: 'inherit',
-        cwd: infraPath,
-        env: process.env,
-      });
+      try {
+        await execa('git', ['clone', '--quiet', flags.repo], {
+          stdio: 'inherit',
+          cwd: infraPath,
+          env: process.env,
+        });
+        cloneSpinner.succeed('Repository cloned');
+      } catch (err) {
+        cloneSpinner.fail('Failed to clone repository');
+        logger.error(
+          `✖  Command failed: local install-template --list\n   Reason: git clone failed — ${(err as Error).message}\n   Fix:    Check network connectivity and the repository URL`
+        );
+      }
 
       if (flags.branch) {
         logger.info(`Using branch ${flags.branch}`);
@@ -176,8 +185,7 @@ export default class InstallTemplate extends Command {
         });
       }
 
-      logger.detail('');
-      logger.success('=== Available Templates ===');
+      logger.success('Available Templates:');
 
       const templatesDir = path.join(cloneDir, flags.path);
       if (fs.existsSync(templatesDir)) {
@@ -188,13 +196,11 @@ export default class InstallTemplate extends Command {
           process.stdout.write(t + '\n');
         }
       } else {
-        logger.error(`Templates path "${flags.path}" not found in the repository.`);
+        logger.warn(`Templates path "${flags.path}" not found in the repository.`);
       }
 
       // Cleanup clone
       fs.rmSync(cloneDir, { recursive: true, force: true });
-
-      logger.success('');
       return;
     }
 
@@ -202,31 +208,44 @@ export default class InstallTemplate extends Command {
     // 5. Install mode: require --name
     // ----------------------------------------------------------------
     if (!flags.name) {
-      this.error('You must provide a template name with --name <template>');
+      logger.error(
+        '✖  Command failed: local install-template\n   Reason: No template name provided\n   Fix:    Pass --name <template-name> or use --list to see available templates'
+      );
     }
-    const templateName = flags.name;
+    const templateName = flags.name!;
 
-    logger.urlLine('=== Template Details ===', '');
-    logger.urlLine('Project name:', templateName);
-    logger.urlLine('Repository URL:', flags.repo);
-    logger.urlLine('Repository Name:', repoName);
-    logger.urlLine('Path:', flags.path);
+    logger.panel('Template Details', [
+      `Project name:    ${templateName}`,
+      `Repository URL:  ${flags.repo}`,
+      `Repository Name: ${repoName}`,
+      `Path:            ${flags.path}`,
+    ]);
 
     // ----------------------------------------------------------------
     // 6. Clone the repo
     // ----------------------------------------------------------------
+    const cloneSpinner = logger.spin('Cloning template repository...');
+
     if (fs.existsSync(cloneDir)) {
       fs.rmSync(cloneDir, { recursive: true, force: true });
     }
 
-    await execa('git', ['clone', '--quiet', flags.repo], {
-      stdio: 'inherit',
-      cwd: infraPath,
-      env: process.env,
-    });
+    try {
+      await execa('git', ['clone', '--quiet', flags.repo], {
+        stdio: 'inherit',
+        cwd: infraPath,
+        env: process.env,
+      });
+      cloneSpinner.succeed('Repository cloned');
+    } catch (err) {
+      cloneSpinner.fail('Failed to clone repository');
+      logger.error(
+        `✖  Command failed: local install-template\n   Reason: git clone failed — ${(err as Error).message}\n   Fix:    Check network connectivity and repository URL`
+      );
+    }
 
     if (flags.branch) {
-      logger.urlLine('Branch:', flags.branch);
+      logger.info(`Using branch: ${flags.branch}`);
       await execa('git', ['checkout', '--quiet', flags.branch], {
         stdio: 'inherit',
         cwd: cloneDir,
@@ -234,45 +253,45 @@ export default class InstallTemplate extends Command {
       });
     }
 
-    logger.success('');
-
     // ----------------------------------------------------------------
     // 7. Verify the template exists in the cloned repo
     // ----------------------------------------------------------------
-    logger.detail('Checking if the template exists on repository...');
+    logger.step('Checking if the template exists on repository...');
 
-    const projectInRepo = path.join(cloneDir, flags.path, templateName);
+    const projectInRepo = path.join(cloneDir, flags.path!, templateName);
     if (!fs.existsSync(projectInRepo)) {
       fs.rmSync(cloneDir, { recursive: true, force: true });
-      this.error(`Project does not exist on repository: ${flags.path}/${templateName}`);
+      logger.error(
+        `✖  Command failed: local install-template\n   Reason: Template "${flags.path}/${templateName}" not found in repository\n   Fix:    Run with --list to see available templates`
+      );
     }
-    logger.detail('Template exists!');
+    logger.success('Template found');
 
     // ----------------------------------------------------------------
     // 8. Move template to source/project/
     // ----------------------------------------------------------------
     const targetDir = path.join(sourcePath, 'project', templateName);
 
-    logger.detail(`Cleaning old directories: ${templateName} from projects`);
+    logger.step(`Cleaning old directories: ${templateName} from projects`);
     if (fs.existsSync(targetDir)) {
       fs.rmSync(targetDir, { recursive: true, force: true });
     }
 
-    logger.detail('Moving template to the projects directory');
+    logger.step('Moving template to the projects directory');
     fs.renameSync(projectInRepo, targetDir);
 
     // ----------------------------------------------------------------
-    // 9. Update euclid.json: project_name and tessellation_version
+    // 9. Update euclid.json: projectName and tessellation_version
     // ----------------------------------------------------------------
-    logger.detail('Updating euclid.json project_name');
+    logger.step('Updating euclid.json projectName');
     const euclidJsonPath = path.join(rootPath, 'euclid.json');
     const euclidJson = JSON.parse(fs.readFileSync(euclidJsonPath, 'utf-8')) as Record<string, unknown>;
-    euclidJson['project_name'] = templateName;
+    euclidJson['projectName'] = templateName;
 
     // Extract tessellation version from Dependencies.scala
     const dependenciesScala = path.join(targetDir, 'project', 'Dependencies.scala');
     if (fs.existsSync(dependenciesScala)) {
-      logger.detail('Updating euclid.json tessellation_version');
+      logger.step('Updating euclid.json tessellation_version');
       const dependenciesContent = fs.readFileSync(dependenciesScala, 'utf-8');
       const tessMatch = dependenciesContent.match(/val tessellation\s*=\s*"([^"]+)"/);
       if (tessMatch) {
@@ -300,15 +319,23 @@ export default class InstallTemplate extends Command {
     fs.writeFileSync(path.join(rootPath, '.gitignore'), GITIGNORE_CONTENT, 'utf-8');
 
     // Initialize new git repo and commit
-    await execa('git', ['init'], { stdio: 'inherit', cwd: rootPath, env: process.env });
-    await execa('git', ['add', '-A'], { stdio: 'inherit', cwd: rootPath, env: process.env });
-    await execa(
-      'git',
-      ['commit', '-m', `Initial commit after hydra install-template (${templateName})`],
-      { stdio: 'inherit', cwd: rootPath, env: process.env }
-    );
+    const gitSpinner = logger.spin('Initializing git repository...');
+    try {
+      await execa('git', ['init'], { stdio: 'inherit', cwd: rootPath, env: process.env });
+      await execa('git', ['add', '-A'], { stdio: 'inherit', cwd: rootPath, env: process.env });
+      await execa(
+        'git',
+        ['commit', '-m', `Initial commit after hydra install-template (${templateName})`],
+        { stdio: 'inherit', cwd: rootPath, env: process.env }
+      );
+      gitSpinner.succeed('Git repository initialized');
+    } catch (err) {
+      gitSpinner.fail('Failed to initialize git repository');
+      logger.error(
+        `✖  Command failed: local install-template\n   Reason: git init/commit failed — ${(err as Error).message}\n   Fix:    Ensure git is installed and configured`
+      );
+    }
 
-    logger.success('');
-    logger.urlLine('Template installed:', templateName);
+    logger.success(`Template installed: ${templateName}`);
   }
 }

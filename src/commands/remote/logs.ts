@@ -8,22 +8,14 @@
  * layer's log file. Host IPs, users, and SSH key paths are read from
  * the Ansible hosts file.
  *
- * SSH command for node hosts (metagraph-l0, currency-l1, data-l1):
- *   ssh -i <keyFile> <user>@<host>
- *     "cd code/<layer> && if [ -f logs/app.log ]; then tail -f logs/app.log -n <n>; ..."
- *
- * SSH command for monitoring host:
- *   ssh -i <keyFile> <user>@<host>
- *     "cd code/dor-metagraph-integrationnet-monitoring-service/logs;
- *      latest_file=$(ls -t application-* 2>/dev/null | head -n 1); ..."
- *
  * Press Ctrl+C to stop streaming.
  */
 import * as path from 'node:path';
 import { Args, Command, Flags } from '@oclif/core';
 import { execa } from 'execa';
-import { loadConfig, findConfigFile } from '../../config/loader.js';
-import { header, info } from '../../utils/logger.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
+import { logger } from '../../utils/logger.js';
 import { parseHosts } from '../../utils/ansible.js';
 
 const VALID_HOSTS = ['node-1', 'node-2', 'node-3', 'monitoring'] as const;
@@ -75,22 +67,21 @@ export default class RemoteLogs extends Command {
     const layer = args.layer as ValidLayer;
     const lineCount = flags.n;
 
-    header('REMOTE LOGS');
+    logger.section('REMOTE LOGS');
 
     const configPath = findConfigFile(process.cwd());
     if (!configPath) {
-      this.error(
-        'Could not find euclid.json. Run this command from inside an Euclid project directory.'
+      logger.error(
+        '✖  Command failed: remote logs\n   Reason: euclid.json not found\n   Fix:    Run this command from inside an Euclid project directory'
       );
     }
-    const rootPath = path.dirname(configPath);
-    const config = loadConfig(configPath);
+    const rootPath = path.dirname(configPath!);
+    const config = loadAndValidateConfig(configPath!);
 
     const hostsFile = path.resolve(rootPath, config.deploy.ansible.hosts);
     const hosts = await parseHosts(hostsFile);
 
-    info('NOTE: TO STOP LOGGING PRESS CTRL + C');
-    this.log('');
+    logger.info('NOTE: TO STOP LOGGING PRESS CTRL + C');
 
     if (hostName === 'monitoring') {
       // SSH to monitoring host
@@ -98,16 +89,17 @@ export default class RemoteLogs extends Command {
       const monitoringInfo = monitoringHosts?.['monitoring-1'];
 
       if (!monitoringInfo) {
-        this.error('No monitoring-1 host found in Ansible hosts file.');
+        logger.error(
+          '✖  Command failed: remote logs\n   Reason: No monitoring-1 host found in Ansible hosts file\n   Fix:    Check infra/ansible/remote/hosts.ansible.yml'
+        );
       }
 
       const host = String(monitoringInfo.ansible_host);
       const user = String(monitoringInfo.ansible_user);
       const privateKey = String(monitoringInfo.ansible_ssh_private_key_file);
 
-      this.log('SSH to the node...');
+      logger.step(`SSH to monitoring host ${host}...`);
 
-      // Matches remote-logs.sh monitoring SSH command exactly
       const remoteCmd =
         `echo 'Node connected'; ` +
         `cd code/dor-metagraph-integrationnet-monitoring-service/logs; ` +
@@ -116,25 +108,32 @@ export default class RemoteLogs extends Command {
         `tail -f "$latest_file" -n ${lineCount}; ` +
         `else echo 'No application log file found'; fi`;
 
-      await execa('ssh', ['-i', privateKey, `${user}@${host}`, remoteCmd], {
-        stdio: 'inherit',
-      });
+      try {
+        await execa('ssh', ['-i', privateKey, `${user}@${host}`, remoteCmd], {
+          stdio: 'inherit',
+        });
+      } catch (err) {
+        logger.error(
+          `✖  Command failed: remote logs\n   Reason: SSH to monitoring host failed — ${(err as Error).message}\n   Fix:    Verify SSH key path and monitoring host connectivity`
+        );
+      }
     } else {
       // SSH to a node host (node-1, node-2, node-3)
       const nodeHosts = hosts.nodes?.hosts;
       const nodeInfo = nodeHosts?.[hostName];
 
       if (!nodeInfo) {
-        this.error(`No host "${hostName}" found in Ansible hosts file.`);
+        logger.error(
+          `✖  Command failed: remote logs\n   Reason: Host "${hostName}" not found in Ansible hosts file\n   Fix:    Check infra/ansible/remote/hosts.ansible.yml`
+        );
       }
 
-      const host = String(nodeInfo.ansible_host);
-      const user = String(nodeInfo.ansible_user);
-      const privateKey = String(nodeInfo.ansible_ssh_private_key_file);
+      const host = String(nodeInfo!.ansible_host);
+      const user = String(nodeInfo!.ansible_user);
+      const privateKey = String(nodeInfo!.ansible_ssh_private_key_file);
 
-      this.log('SSH to the node...');
+      logger.step(`SSH to node ${host}...`);
 
-      // Matches remote-logs.sh node SSH command exactly
       const remoteCmd =
         `echo 'Node connected'; ` +
         `cd code/${layer} && ` +
@@ -142,9 +141,15 @@ export default class RemoteLogs extends Command {
         `tail -f logs/app.log -n ${lineCount}; ` +
         `else echo 'Log file not found'; fi`;
 
-      await execa('ssh', ['-i', privateKey, `${user}@${host}`, remoteCmd], {
-        stdio: 'inherit',
-      });
+      try {
+        await execa('ssh', ['-i', privateKey, `${user}@${host}`, remoteCmd], {
+          stdio: 'inherit',
+        });
+      } catch (err) {
+        logger.error(
+          `✖  Command failed: remote logs\n   Reason: SSH to node ${host} failed — ${(err as Error).message}\n   Fix:    Verify SSH key path and node connectivity`
+        );
+      }
     }
   }
 }

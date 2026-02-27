@@ -1,20 +1,17 @@
 /**
- * Styled output utilities for the hydra CLI.
+ * Centralized logger for the hydra CLI.
  *
- * Replicates the color-coded output of the original bash scripts
- * (scripts/utils/echo-colors.sh and print_nodes_information in start.sh).
- *
- * Color mapping from bash original:
- *   echo_green  → chalk.green    (success messages)
- *   echo_yellow → chalk.yellow   (progress/info labels)
- *   echo_white  → chalk.white    (URLs, detail text)
- *   echo_red    → chalk.red      (errors)
- *   echo_title  → chalk.cyan     (section separators/headers)
- *   echo_url    → chalk.yellow(label) + chalk.white(url)
+ * Primary API: the `logger` object (info, success, warn, error, step, debug, spin, panel, section, table).
+ * Backward-compat named exports kept for existing command code.
  */
+/* eslint-disable no-console */
 
 import chalk from 'chalk';
+import ora, { type Ora } from 'ora';
+import boxen from 'boxen';
+import Table from 'cli-table3';
 import type { EuclidConfig } from '../config/schema.js';
+import { elapsedSinceStart } from './time.js';
 
 // ---------------------------------------------------------------------------
 // Port constants (from infra/ansible/local/playbooks/vars.ansible.yml)
@@ -33,220 +30,216 @@ export const BASE_PORTS = {
 export const PORT_OFFSET = 10; // per-node offset
 
 // ---------------------------------------------------------------------------
-// Separator line — matches the bash `################################################################`
+// Primary logger object
 // ---------------------------------------------------------------------------
 
-const SEPARATOR = '################################################################';
-const METAGRAPH_SEPARATOR = '######################### METAGRAPH INFO #########################';
+export const logger = {
+  /** ℹ  dim cyan — general information */
+  info(msg: string): void {
+    console.log(`${chalk.dim(chalk.cyan('ℹ'))}  ${msg}`);
+  },
+
+  /** ✔  green — operation completed */
+  success(msg: string): void {
+    console.log(`${chalk.green('✔')}  ${msg}`);
+  },
+
+  /** ⚠  yellow — non-fatal warning */
+  warn(msg: string): void {
+    console.warn(`${chalk.yellow('⚠')}  ${msg}`);
+  },
+
+  /** ✖  red — fatal error; always calls process.exit(1) */
+  error(msg: string): never {
+    const elapsed = elapsedSinceStart();
+    const suffix = elapsed ? `  ${chalk.dim(elapsed)}` : '';
+    console.error(`${chalk.red('✖')}  ${msg}${suffix}`);
+    process.exit(1);
+  },
+
+  /** →  blue bold — step in a multi-step process */
+  step(msg: string): void {
+    console.log(`${chalk.bold.blue('→')}  ${msg}`);
+  },
+
+  /** ·  gray — only shown when DEBUG=true */
+  debug(msg: string): void {
+    if (process.env['DEBUG'] === 'true') {
+      console.log(`${chalk.gray('·')}  ${msg}`);
+    }
+  },
+
+  /** Start an ora spinner and return the instance so caller can .succeed()/.fail() */
+  spin(msg: string): Ora {
+    return ora(msg).start();
+  },
+
+  /** Boxen info panel */
+  panel(title: string, lines: string[]): void {
+    const body = [chalk.bold(title), '', ...lines].join('\n');
+    console.log(
+      boxen(body, {
+        borderStyle: 'round',
+        padding: 1,
+        borderColor: 'cyan',
+      })
+    );
+  },
+
+  /** Prints ─── TITLE ─────────────────────── */
+  section(title: string): void {
+    const pad = '─'.repeat(Math.max(0, 40 - title.length));
+    console.log(chalk.dim(`─── ${title} ${pad}`));
+  },
+
+  /** cli-table3 table with cyan.bold headers */
+  table(headers: string[], rows: string[][]): void {
+    const t = new Table({
+      head: headers.map((h) => chalk.cyan.bold(h)),
+    });
+    for (const row of rows) {
+      t.push(row);
+    }
+    console.log(t.toString());
+  },
+};
 
 // ---------------------------------------------------------------------------
-// Core output functions
-// ---------------------------------------------------------------------------
-
-/** Cyan — section separators and headers (bash: echo_title) */
-export function header(msg: string = SEPARATOR): void {
-  console.log(chalk.cyan(msg));
-}
-
-/** Green — success messages (bash: echo_green) */
-export function success(msg: string): void {
-  console.log(chalk.green(msg));
-}
-
-/** Yellow — progress/status labels (bash: echo_yellow) */
-export function info(msg: string): void {
-  console.log(chalk.yellow(msg));
-}
-
-/** White — URLs and detail text (bash: echo_white) */
-export function detail(msg: string = ''): void {
-  console.log(chalk.white(msg));
-}
-
-/** Red — error messages (bash: echo_red) */
-export function error(msg: string): void {
-  console.error(chalk.red(msg));
-}
-
-/** Yellow + white label:url pair (bash: echo_url) */
-export function urlLine(label: string, url: string): void {
-  console.log(`${chalk.yellow(label)} ${chalk.white(url)}`);
-}
-
-/**
- * warn — orange/yellow warning (not in original bash but useful for TypeScript CLI).
- * Uses bold yellow to distinguish from info().
- */
-export function warn(msg: string): void {
-  console.warn(chalk.bold.yellow(`Warning: ${msg}`));
-}
-
-// ---------------------------------------------------------------------------
-// Section boundary helpers
-// ---------------------------------------------------------------------------
-
-/** Print a cyan separator with optional label (matches the bash start.sh style) */
-export function sectionStart(label?: string): void {
-  header();
-  if (label) {
-    info(label);
-    detail('');
-  }
-}
-
-/** Print closing cyan separator */
-export function sectionEnd(): void {
-  header();
-}
-
-// ---------------------------------------------------------------------------
-// Node URL block
+// Node URL helper
 // ---------------------------------------------------------------------------
 
 /**
  * Compute the public port for a given layer and node index.
- *
- * Formula matches vars.ansible.yml: port = base_port + (node_index * offset)
- * Node indices are 0-based.
- *
- * @example
- * nodePort('global-l0', 0)  // 9000
- * nodePort('global-l0', 1)  // 9010
- * nodePort('dag-l1', 2)     // 9120
+ * Formula: base_port + (node_index * PORT_OFFSET)
  */
 export function nodePort(layer: keyof typeof BASE_PORTS, nodeIndex: number): number {
   return BASE_PORTS[layer] + nodeIndex * PORT_OFFSET;
 }
 
 // ---------------------------------------------------------------------------
-// MetagraphInfo block
+// MetagraphInfo panel (section 2.4)
 // ---------------------------------------------------------------------------
 
 export interface MetagraphUrls {
-  /** Metagraph ID from genesis.address file */
   metagraphId: string;
-  /** Grafana URL if enabled */
   grafanaUrl?: string;
 }
 
 /**
- * Print the full metagraph info block shown after `hydra start-genesis` completes.
+ * Print the metagraph info boxen panel after start-genesis / start-rollback.
  *
- * Replicates print_nodes_information() from scripts/hydra-operations/start.sh:
- *
- * ```
- * ######################### METAGRAPH INFO #########################
- *
- * Metagraph ID: <id>
- *
- *
- * Container metagraph-node-1 URLs
- * Global L0:    http://localhost:9000/node/info
- * DAG L1:       http://localhost:9100/node/info
- * Metagraph L0: http://localhost:9200/node/info
- * Currency L1:  http://localhost:9300/node/info
- * Data L1:      http://localhost:9400/node/info
- *
- *
- * Container metagraph-node-2 URLs
- * ...
- *
- * Clusters URLs
- * Global L0:    http://localhost:9000/cluster/info
- * ...
- * ```
- *
- * @param config  - Loaded EuclidConfig (for node names and layers).
- * @param urls    - Dynamic values (metagraphId, optional grafanaUrl).
+ * Replaces the old #### block with a styled boxen panel.
  */
 export function printMetagraphInfo(config: EuclidConfig, urls: MetagraphUrls): void {
   const layers = config.layers;
+  const idShort =
+    urls.metagraphId.length > 30
+      ? `${urls.metagraphId.slice(0, 30)}...`
+      : urls.metagraphId;
 
-  console.log(chalk.white(METAGRAPH_SEPARATOR));
-  console.log();
-  urlLine('Metagraph ID:', urls.metagraphId);
-  console.log();
-  console.log();
+  const lines: string[] = [];
+  lines.push(`  ${chalk.dim('ID')}  ${chalk.white(idShort)}`);
 
-  // Per-node URL blocks
-  config.nodes.forEach((node, index) => {
-    success(`Container ${node.name} URLs`);
+  config.nodes.forEach((_, index) => {
+    lines.push('');
+    lines.push(`  ${chalk.bold(`NODE ${index + 1}`)}`);
 
-    // Global L0 only shows on node 0 (genesis/lead node)
     if (index === 0 && layers.includes('global-l0')) {
-      urlLine('Global L0:', `http://localhost:${nodePort('global-l0', 0)}/node/info`);
-    }
-
-    if (layers.includes('dag-l1')) {
-      urlLine('DAG L1:', `http://localhost:${nodePort('dag-l1', index)}/node/info`);
+      lines.push(
+        `  ${chalk.dim('Global L0')}    → ${chalk.cyan(`http://localhost:${nodePort('global-l0', 0)}`)}`
+      );
     }
 
     if (layers.includes('metagraph-l0')) {
-      urlLine('Metagraph L0:', `http://localhost:${nodePort('metagraph-l0', index)}/node/info`);
+      lines.push(
+        `  ${chalk.dim('Metagraph L0')} → ${chalk.cyan(`http://localhost:${nodePort('metagraph-l0', index)}`)}`
+      );
     }
 
     if (layers.includes('currency-l1') || layers.includes('metagraph-l1-currency')) {
-      urlLine('Currency L1:', `http://localhost:${nodePort('currency-l1', index)}/node/info`);
+      lines.push(
+        `  ${chalk.dim('Currency L1')}  → ${chalk.cyan(`http://localhost:${nodePort('currency-l1', index)}`)}`
+      );
     }
 
     if (layers.includes('data-l1') || layers.includes('metagraph-l1-data')) {
-      urlLine('Data L1:', `http://localhost:${nodePort('data-l1', index)}/node/info`);
+      lines.push(
+        `  ${chalk.dim('Data L1')}      → ${chalk.cyan(`http://localhost:${nodePort('data-l1', index)}`)}`
+      );
     }
-
-    console.log();
-    console.log();
   });
 
-  // Grafana block (if enabled)
-  if (config.docker.start_grafana_container || urls.grafanaUrl) {
-    success('Telemetry');
-    urlLine('Grafana:', urls.grafanaUrl ?? 'http://localhost:3000');
-    console.log();
+  if (config.monitoring?.grafana?.enabled || urls.grafanaUrl) {
+    lines.push('');
+    lines.push(
+      `  ${chalk.dim('Grafana')}      → ${chalk.cyan(urls.grafanaUrl ?? 'http://localhost:3000')}`
+    );
   }
 
-  // Cluster URL block
-  success('Clusters URLs');
+  const title = chalk.bold.cyan('✦  METAGRAPH RUNNING  ✦');
 
-  if (layers.includes('global-l0')) {
-    urlLine('Global L0:', `http://localhost:${BASE_PORTS['global-l0']}/cluster/info`);
-  }
-
-  if (layers.includes('dag-l1')) {
-    urlLine('DAG L1:', `http://localhost:${BASE_PORTS['dag-l1']}/cluster/info`);
-  }
-
-  if (layers.includes('metagraph-l0')) {
-    urlLine('Metagraph L0:', `http://localhost:${BASE_PORTS['metagraph-l0']}/cluster/info`);
-  }
-
-  if (layers.includes('currency-l1') || layers.includes('metagraph-l1-currency')) {
-    urlLine('Currency L1:', `http://localhost:${BASE_PORTS['currency-l1']}/cluster/info`);
-  }
-
-  if (layers.includes('data-l1') || layers.includes('metagraph-l1-data')) {
-    urlLine('Data L1:', `http://localhost:${BASE_PORTS['data-l1']}/cluster/info`);
-  }
-
-  console.log();
-}
-
-// ---------------------------------------------------------------------------
-// Convenience: start/stop/build styled banners
-// ---------------------------------------------------------------------------
-
-/** Banner for start-genesis / start-rollback commands */
-export function startBanner(mode: 'genesis' | 'rollback' = 'genesis'): void {
-  header(
-    `################################## START (${mode.toUpperCase()}) ##################################`
+  console.log(
+    boxen([title, ...lines].join('\n'), {
+      borderStyle: 'round',
+      padding: 1,
+      borderColor: 'cyan',
+    })
   );
 }
 
-/** Banner for stop command */
-export function stopBanner(): void {
-  header('################################## STOP ##################################');
+// ---------------------------------------------------------------------------
+// Backward-compat named exports (used by remote commands + status command)
+// ---------------------------------------------------------------------------
+
+const SEPARATOR = '################################################################';
+
+/** Cyan separator / header line (backward compat) */
+export function header(msg: string = SEPARATOR): void {
+  console.log(chalk.cyan(msg));
 }
 
-/** Banner for build command */
+/** Green success line (backward compat) */
+export function success(msg: string): void {
+  console.log(`${chalk.green('✔')}  ${msg}`);
+}
+
+/** Cyan/yellow info line (backward compat) */
+export function info(msg: string): void {
+  console.log(`${chalk.dim(chalk.cyan('ℹ'))}  ${msg}`);
+}
+
+/** White detail / blank line (backward compat) */
+export function detail(msg = ''): void {
+  console.log(chalk.white(msg));
+}
+
+/** Red error line (backward compat — does NOT exit by default) */
+export function error(msg: string): void {
+  console.error(`${chalk.red('✖')}  ${msg}`);
+}
+
+/** Yellow+white url pair (backward compat) */
+export function urlLine(label: string, url: string): void {
+  console.log(`${chalk.yellow(label)} ${chalk.white(url)}`);
+}
+
+/** Bold yellow warning (backward compat) */
+export function warn(msg: string): void {
+  console.warn(`${chalk.yellow('⚠')}  ${msg}`);
+}
+
+// ---------------------------------------------------------------------------
+// Banner helpers
+// ---------------------------------------------------------------------------
+
+export function startBanner(mode: 'genesis' | 'rollback' = 'genesis'): void {
+  logger.section(`START (${mode.toUpperCase()})`);
+}
+
+export function stopBanner(): void {
+  logger.section('STOP');
+}
+
 export function buildBanner(): void {
-  header('################################## BUILD ##################################');
+  logger.section('BUILD');
 }

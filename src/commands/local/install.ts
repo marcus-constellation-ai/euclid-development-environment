@@ -17,9 +17,10 @@ import * as path from 'node:path';
 import { Command } from '@oclif/core';
 import { execa } from 'execa';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, INSTALL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 
 /** The .gitignore written after install — matches install.sh heredoc exactly. */
 const GITIGNORE_CONTENT = `# IDE and editor files
@@ -97,10 +98,10 @@ export default class Install extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
 
     // ----------------------------------------------------------------
     // 2. Check dependencies (git, g8)
@@ -110,25 +111,28 @@ export default class Install extends Command {
     // ----------------------------------------------------------------
     // 3. Run g8 scaffold (matches create_template project in bash)
     // ----------------------------------------------------------------
-    logger.header('################################## INSTALL ##################################');
-    logger.detail('Installing hydra ...');
-    logger.detail('Installing Framework...');
+    logger.section('INSTALL');
+    logger.step('Installing Framework...');
 
-    // g8 creates the project template into the current directory.
-    // The bash calls: g8 <framework-repo> --name=<project_name>
-    // The actual g8 command reads from euclid.json config for the framework version.
-    await execa(
-      'g8',
-      [
-        `Constellation-Labs/${config.framework.name}.g8`,
-        `--name=${config.project_name}`,
-      ],
-      {
-        stdio: 'inherit',
-        cwd: path.join(rootPath, 'source', 'project'),
-        env: process.env,
-      }
-    );
+    try {
+      // g8 creates the project template into the current directory.
+      await execa(
+        'g8',
+        [
+          `Constellation-Labs/${config.framework.name}.g8`,
+          `--name=${config.projectName}`,
+        ],
+        {
+          stdio: 'inherit',
+          cwd: path.join(rootPath, 'source', 'project'),
+          env: process.env,
+        }
+      );
+    } catch (err) {
+      logger.error(
+        `✖  Command failed: local install\n   Reason: g8 scaffold failed — ${(err as Error).message}\n   Fix:    Ensure g8 is installed and the framework name is correct in euclid.json`
+      );
+    }
 
     // ----------------------------------------------------------------
     // 4. Remove the existing .git directory (detach from Euclid history)
@@ -148,13 +152,22 @@ export default class Install extends Command {
     // ----------------------------------------------------------------
     // 6. Initialize new git repository and create initial commit
     // ----------------------------------------------------------------
-    await execa('git', ['init'], { stdio: 'inherit', cwd: rootPath, env: process.env });
-    await execa('git', ['add', '-A'], { stdio: 'inherit', cwd: rootPath, env: process.env });
-    await execa(
-      'git',
-      ['commit', '-m', 'Initial commit after hydra install'],
-      { stdio: 'inherit', cwd: rootPath, env: process.env }
-    );
+    const gitSpinner = logger.spin('Initializing git repository...');
+    try {
+      await execa('git', ['init'], { stdio: 'inherit', cwd: rootPath, env: process.env });
+      await execa('git', ['add', '-A'], { stdio: 'inherit', cwd: rootPath, env: process.env });
+      await execa(
+        'git',
+        ['commit', '-m', 'Initial commit after hydra install'],
+        { stdio: 'inherit', cwd: rootPath, env: process.env }
+      );
+      gitSpinner.succeed('Git repository initialized');
+    } catch (err) {
+      gitSpinner.fail('Failed to initialize git repository');
+      logger.error(
+        `✖  Command failed: local install\n   Reason: git init/commit failed — ${(err as Error).message}\n   Fix:    Ensure git is installed and configured`
+      );
+    }
 
     logger.success('Installed');
   }

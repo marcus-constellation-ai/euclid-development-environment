@@ -14,9 +14,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Command, Flags } from '@oclif/core';
 
-import { loadConfig, findConfigFile } from '../../config/loader.js';
+import { findConfigFile } from '../../config/loader.js';
+import { loadAndValidateConfig } from '../../config/schema.js';
 import { requireDependencies, LOCAL_DEPS } from '../../utils/dependencies.js';
-import * as logger from '../../utils/logger.js';
+import { logger } from '../../utils/logger.js';
+import { confirmYN } from '../../utils/prompt.js';
 import { buildAnsiblePaths, runAnsible } from '../../utils/docker.js';
 
 export default class Destroy extends Command {
@@ -48,10 +50,10 @@ export default class Destroy extends Command {
     // ----------------------------------------------------------------
     const configFilePath = findConfigFile();
     if (!configFilePath) {
-      this.error('Could not find euclid.json. Run from inside an Euclid project directory.');
+      logger.error('Could not find euclid.json. Run from inside an Euclid project directory.');
     }
-    const config = loadConfig(configFilePath);
-    const rootPath = path.dirname(configFilePath);
+    const config = loadAndValidateConfig(configFilePath!);
+    const rootPath = path.dirname(configFilePath!);
     const infraPath = path.join(rootPath, 'infra');
     const sourcePath = path.join(rootPath, 'source');
 
@@ -63,8 +65,13 @@ export default class Destroy extends Command {
     // ----------------------------------------------------------------
     // 3. Run destroy playbook (matches destroy_containers() in bash)
     // ----------------------------------------------------------------
-    logger.header('################################## DESTROY ##################################');
-    logger.detail('Starting destroying containers ...');
+    logger.section('DESTROY');
+
+    if (!(await confirmYN('⚠  This will stop and remove all containers. Continue?'))) {
+      return;
+    }
+
+    const spinner = logger.spin('Destroying containers...');
 
     const ansible = buildAnsiblePaths(infraPath);
     const nodesJson = JSON.stringify(config.nodes);
@@ -73,19 +80,27 @@ export default class Destroy extends Command {
       INFRA_PATH: infraPath,
     };
 
-    await runAnsible(ansible.containersDestroy, {}, baseEnv);
+    try {
+      await runAnsible(ansible.containersDestroy, {}, baseEnv);
+      spinner.succeed('Containers destroyed');
+    } catch (err) {
+      spinner.fail('Failed to destroy containers');
+      logger.error(
+        `✖  Command failed: local destroy\n   Reason: Ansible destroy playbook failed — ${(err as Error).message}\n   Fix:    Check Docker is running and try again`
+      );
+    }
 
     // ----------------------------------------------------------------
     // 4. Optionally delete source/project/<project_name>
     // ----------------------------------------------------------------
-    if (flags.delete_project && config.project_name) {
-      const projectDir = path.join(sourcePath, 'project', config.project_name);
+    if (flags.delete_project && config.projectName) {
+      const projectDir = path.join(sourcePath, 'project', config.projectName);
       if (fs.existsSync(projectDir)) {
-        logger.info(`Deleting project directory: source/project/${config.project_name}`);
+        logger.step(`Deleting project directory: source/project/${config.projectName}`);
         fs.rmSync(projectDir, { recursive: true, force: true });
         logger.success('Project directory deleted');
       } else {
-        logger.info(`Project directory not found: source/project/${config.project_name}`);
+        logger.warn(`Project directory not found: source/project/${config.projectName}`);
       }
     }
 
